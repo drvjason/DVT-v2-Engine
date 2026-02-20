@@ -9,6 +9,11 @@ python-dotenv>=1.0.0,<2.0      # .env file loading for dev/staging parity with p
 structlog>=24.1.0,<25.0        # Structured JSON audit logging; wired to X-Auth-Request-User/Email headers
 regex>=2024.11.6,<2026.0       # Regex engine with timeout support for ReDoS protection
 
+# ─── AI Provider SDKs (Enterprise Model Switching) ───────────────────────────
+openai>=1.40.0,<2.0            # OpenAI GPT model adapters
+anthropic>=0.34.0,<1.0         # Anthropic Claude model adapters
+google-generativeai>=0.8.0,<1.0  # Google Gemini model adapters
+
 # ─── Removed in v6.2 ──────────────────────────────────────────────────────────
 # httpx         — Listed but unused; API calls use stdlib urllib.request. Re-add if SDK is adopted.
 # authlib       — Listed but unused; Okta SSO is handled by oauth2-proxy sidecar, not app code.
