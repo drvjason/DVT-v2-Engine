@@ -1,0 +1,1618 @@
+{
+  "metadata": {
+    "platform": "Armis Centrix",
+    "version": "1.0",
+    "schema_version": "1.0",
+    "description": "Armis Centrix detection engineering knowledge base",
+    "kb_updated_at": "2025-01-01"
+  },
+  "asq_language": {
+    "overview": {
+      "description": "Armis Standard Query (ASQ) is a proprietary declarative query language used to search and filter Armis entities (devices, activities, alerts, connections, vulnerabilities). It is the backbone of all detection policies, threat hunting, and dashboards.",
+      "syntax_model": "SQL-inspired, field-operator-value filtering with context-specific scoping.",
+      "case_sensitivity": "Field names are case-insensitive. String values are case-insensitive unless using regex operators."
+    },
+    "entity_types": [
+      {
+        "entity": "device",
+        "description": "Represents any physical or virtual asset discovered by Armis.",
+        "example": "in:devices name:laptop*"
+      },
+      {
+        "entity": "activity",
+        "description": "Represents observed network or behavioral events attributed to a device.",
+        "example": "in:activity type:HTTP"
+      },
+      {
+        "entity": "alert",
+        "description": "Represents policy violations or threat detections.",
+        "example": "in:alerts severity:high status:unhandled"
+      },
+      {
+        "entity": "vulnerability",
+        "description": "Represents CVE-based or platform-specific vulnerabilities associated with devices.",
+        "example": "in:vulnerabilities severity:critical"
+      },
+      {
+        "entity": "connection",
+        "description": "Represents observed network connections between devices.",
+        "example": "in:connections protocol:RDP"
+      }
+    ],
+    "syntax_reference": {
+      "basic_structure": "in:<entity_type> <field>:<value> [<logical_operator> <field>:<value>]",
+      "clause_types": {
+        "in": {
+          "description": "Specifies the entity type to query. Required as the first clause.",
+          "syntax": "in:devices | in:activity | in:alerts | in:vulnerabilities | in:connections",
+          "notes": "Only one entity type per query. Cross-entity queries are done via relationship fields (e.g., device fields on activity records)."
+        },
+        "field_filter": {
+          "description": "Filters entities by field value.",
+          "syntax": "<field>:<value>",
+          "examples": [
+            "type:\"IP Camera\"",
+            "ipAddress:192.168.1.*",
+            "riskScore:>70"
+          ]
+        },
+        "timeframe": {
+          "description": "Restricts results to a time window. Used primarily with activity and alert entities.",
+          "syntax": "timeFrame:<value>",
+          "supported_values": [
+            "1 hour",
+            "3 hours",
+            "12 hours",
+            "24 hours",
+            "48 hours",
+            "7 days",
+            "14 days",
+            "30 days"
+          ],
+          "example": "in:activity type:HTTP timeFrame:\"24 hours\""
+        },
+        "after": {
+          "description": "ISO 8601 timestamp filter to retrieve entities updated after a specific time.",
+          "syntax": "after:<ISO8601>",
+          "example": "in:alerts after:2024-01-01T00:00:00Z"
+        },
+        "orderBy": {
+          "description": "Sorts results by a specified field.",
+          "syntax": "orderBy:<field> [asc|desc]",
+          "default_order": "desc",
+          "example": "in:devices orderBy:riskScore desc"
+        }
+      },
+      "operators": {
+        "comparison": [
+          {
+            "operator": ":",
+            "description": "Equality / substring match for strings, exact match for enums.",
+            "example": "type:Camera"
+          },
+          {
+            "operator": ":>",
+            "description": "Greater than (numeric fields).",
+            "example": "riskScore:>70"
+          },
+          {
+            "operator": ":<",
+            "description": "Less than (numeric fields).",
+            "example": "riskScore:<30"
+          },
+          {
+            "operator": ":>=",
+            "description": "Greater than or equal to.",
+            "example": "riskScore:>=80"
+          },
+          {
+            "operator": ":<=",
+            "description": "Less than or equal to.",
+            "example": "riskScore:<=20"
+          }
+        ],
+        "logical": [
+          {
+            "operator": "AND",
+            "description": "Both conditions must be true.",
+            "example": "type:Camera AND riskScore:>70"
+          },
+          {
+            "operator": "OR",
+            "description": "Either condition must be true.",
+            "example": "type:Camera OR type:\"IP Phone\""
+          },
+          {
+            "operator": "NOT",
+            "description": "Negates a condition.",
+            "example": "NOT manufacturer:Apple"
+          }
+        ],
+        "wildcard": [
+          {
+            "operator": "*",
+            "description": "Multi-character wildcard. Can be used in string value fields.",
+            "example": "name:laptop*",
+            "notes": "Cannot be used as the sole character in a filter value. Avoid leading wildcards on high-cardinality fields for performance."
+          },
+          {
+            "operator": "?",
+            "description": "Single-character wildcard.",
+            "example": "ipAddress:192.168.1.??"
+          }
+        ],
+        "set": [
+          {
+            "operator": ":(val1,val2,...)",
+            "description": "Matches any of the listed values (IN clause equivalent).",
+            "example": "protocol:(HTTP,HTTPS,FTP)"
+          }
+        ],
+        "range": [
+          {
+            "operator": ":[start TO end]",
+            "description": "Inclusive range filter for numeric and date fields.",
+            "example": "riskScore:[50 TO 100]",
+            "notes": "Use curly braces {} for exclusive range boundaries."
+          }
+        ],
+        "exists": [
+          {
+            "operator": "_exists_:<field>",
+            "description": "Checks whether a field has a non-null/non-empty value.",
+            "example": "_exists_:assignedSite"
+          }
+        ]
+      },
+      "grouping": {
+        "description": "Parentheses control logical precedence.",
+        "example": "(type:Camera OR type:\"IP Phone\") AND riskScore:>70",
+        "notes": "Always use parentheses when mixing AND/OR to avoid ambiguous evaluation order."
+      },
+      "relationship_traversal": {
+        "description": "Some fields allow querying related entities inline.",
+        "examples": [
+          {
+            "scenario": "Devices with a specific alert status",
+            "query": "in:devices alertsSeverity:high"
+          },
+          {
+            "scenario": "Activity associated with devices of a specific type",
+            "query": "in:activity deviceType:\"Medical Device\""
+          }
+        ]
+      }
+    },
+    "constraints_and_limitations": {
+      "query_complexity": {
+        "max_conditions": "No hard-documented public limit, but queries exceeding ~50 clauses may time out or degrade performance. Armis recommends keeping policies focused.",
+        "nested_depth": "Parenthetical nesting is supported but deeply nested logic (>5 levels) is not recommended and may cause parsing errors."
+      },
+      "wildcard_restrictions": [
+        "Leading wildcards (*value) are heavily discouraged on high-cardinality string fields \u2014 they bypass index optimization and cause full scans.",
+        "Wildcards cannot be used on numeric fields.",
+        "Wildcard-only value (i.e., field:*) is not valid; use _exists_:<field> instead."
+      ],
+      "timeframe_restrictions": [
+        "The timeFrame clause is only valid for activity, alert, and connection entities.",
+        "timeFrame and after cannot be combined in the same query.",
+        "Maximum lookback for activity queries via ASQ is typically 30 days depending on tenant retention settings."
+      ],
+      "aggregation_limitations": [
+        "ASQ does not natively support COUNT(), SUM(), AVG(), or GROUP BY aggregations inline.",
+        "Aggregation-style analytics are available via the Armis Dashboard Query Engine and API, not directly in policy ASQ.",
+        "For threshold-based detection (e.g., >10 connections in 1 hour), use Armis policy activity count thresholds rather than ASQ aggregation."
+      ],
+      "join_limitations": [
+        "ASQ does not support explicit JOINs between entity types in a single query.",
+        "Cross-entity correlation must be done through policy chaining, integration pipelines, or SIEM forwarding."
+      ],
+      "regex_support": {
+        "supported": true,
+        "syntax": "fieldName:/regex/",
+        "example": "name:/^MED-[0-9]{4}$/",
+        "limitations": [
+          "Regex is computationally expensive \u2014 avoid on high-cardinality fields in production policies.",
+          "Complex regex patterns may time out on large device sets.",
+          "Regex is case-sensitive unless the i flag is appended: /pattern/i"
+        ]
+      },
+      "negation_gotchas": [
+        "NOT on a multi-value field negates if ANY value matches. Use with care on fields like tags or labels.",
+        "NOT does not match NULL/missing fields. Combine NOT with _exists_ if you want to exclude both present-and-matching and absent fields."
+      ],
+      "field_availability_by_entity": {
+        "note": "Not all fields are available across all entity types. Querying a device field on an activity record will only work if Armis has resolved the device context for that activity."
+      },
+      "rate_limits": {
+        "api_search": "Armis API search endpoints are subject to rate limiting. Burst limits apply; consult your tenant's API documentation.",
+        "policy_evaluation_frequency": "High-frequency policy evaluation (continuous mode on complex queries) can impact platform performance. Armis recommends scoping queries to reduce evaluated entity counts."
+      }
+    }
+  },
+  "data_models": {
+    "device": {
+      "description": "Core entity representing every asset Armis has discovered.",
+      "fields": {
+        "identity": [
+          {
+            "field": "id",
+            "type": "integer",
+            "description": "Unique Armis device ID.",
+            "filterable": true,
+            "example": "12345"
+          },
+          {
+            "field": "name",
+            "type": "string",
+            "description": "Device hostname or display name.",
+            "filterable": true,
+            "example": "MRI-SCANNER-01"
+          },
+          {
+            "field": "ipAddress",
+            "type": "string",
+            "description": "Primary IP address.",
+            "filterable": true,
+            "example": "192.168.10.50"
+          },
+          {
+            "field": "ipv6Address",
+            "type": "string",
+            "description": "IPv6 address if observed.",
+            "filterable": true,
+            "example": "fe80::1"
+          },
+          {
+            "field": "macAddress",
+            "type": "string",
+            "description": "Primary MAC address.",
+            "filterable": true,
+            "example": "AA:BB:CC:DD:EE:FF"
+          },
+          {
+            "field": "macAddresses",
+            "type": "array<string>",
+            "description": "All observed MAC addresses.",
+            "filterable": true
+          },
+          {
+            "field": "ipAddresses",
+            "type": "array<string>",
+            "description": "All observed IP addresses.",
+            "filterable": true
+          }
+        ],
+        "classification": [
+          {
+            "field": "type",
+            "type": "string",
+            "description": "Device type from Armis taxonomy (e.g., Laptop, IP Camera, PLC, Medical Device).",
+            "filterable": true,
+            "example": "IP Camera"
+          },
+          {
+            "field": "category",
+            "type": "string",
+            "description": "High-level category (IT, IoT, OT, Medical, Mobile, Network).",
+            "filterable": true,
+            "example": "IoT"
+          },
+          {
+            "field": "manufacturer",
+            "type": "string",
+            "description": "Hardware manufacturer.",
+            "filterable": true,
+            "example": "Axis Communications"
+          },
+          {
+            "field": "model",
+            "type": "string",
+            "description": "Device model.",
+            "filterable": true,
+            "example": "P3245-V"
+          },
+          {
+            "field": "operatingSystem",
+            "type": "string",
+            "description": "Operating system name.",
+            "filterable": true,
+            "example": "Windows 10"
+          },
+          {
+            "field": "operatingSystemVersion",
+            "type": "string",
+            "description": "OS version string.",
+            "filterable": true,
+            "example": "10.0.19041"
+          },
+          {
+            "field": "businessUnit",
+            "type": "string",
+            "description": "Business unit tag assigned to the device.",
+            "filterable": true
+          },
+          {
+            "field": "tags",
+            "type": "array<string>",
+            "description": "User-defined and auto-assigned tags.",
+            "filterable": true
+          },
+          {
+            "field": "labels",
+            "type": "array<string>",
+            "description": "Policy-assigned labels.",
+            "filterable": true
+          }
+        ],
+        "network": [
+          {
+            "field": "network",
+            "type": "string",
+            "description": "Network segment name or VLAN.",
+            "filterable": true,
+            "example": "VLAN-100-Medical"
+          },
+          {
+            "field": "wifi",
+            "type": "boolean",
+            "description": "True if device communicates over Wi-Fi.",
+            "filterable": true
+          },
+          {
+            "field": "ssid",
+            "type": "string",
+            "description": "Wi-Fi SSID.",
+            "filterable": true
+          },
+          {
+            "field": "assignedSite",
+            "type": "string",
+            "description": "Physical site assignment.",
+            "filterable": true
+          },
+          {
+            "field": "boundaries",
+            "type": "array<string>",
+            "description": "Network boundary memberships.",
+            "filterable": true
+          },
+          {
+            "field": "visibility",
+            "type": "enum",
+            "description": "Device network visibility (Seen, Not Seen).",
+            "filterable": true
+          },
+          {
+            "field": "lastSeen",
+            "type": "datetime",
+            "description": "Last time device was observed on the network.",
+            "filterable": true
+          },
+          {
+            "field": "firstSeen",
+            "type": "datetime",
+            "description": "First time device was observed.",
+            "filterable": true
+          }
+        ],
+        "risk_and_security": [
+          {
+            "field": "riskScore",
+            "type": "integer",
+            "description": "0\u2013100 risk score assigned by Armis. Higher = more risk.",
+            "filterable": true,
+            "example": 85
+          },
+          {
+            "field": "riskLevel",
+            "type": "enum",
+            "description": "Categorical risk level: Low, Medium, High, Critical.",
+            "filterable": true
+          },
+          {
+            "field": "alertsSeverity",
+            "type": "enum",
+            "description": "Highest active alert severity on the device.",
+            "filterable": true
+          },
+          {
+            "field": "activeAlerts",
+            "type": "integer",
+            "description": "Count of currently active alerts.",
+            "filterable": true
+          },
+          {
+            "field": "patchLevel",
+            "type": "enum",
+            "description": "Software patch status: Up-to-date, Outdated, Unknown.",
+            "filterable": true
+          },
+          {
+            "field": "vulnerabilitiesCount",
+            "type": "integer",
+            "description": "Total vulnerability count.",
+            "filterable": true
+          },
+          {
+            "field": "criticalVulnerabilitiesCount",
+            "type": "integer",
+            "description": "Count of Critical-severity CVEs.",
+            "filterable": true
+          },
+          {
+            "field": "managed",
+            "type": "boolean",
+            "description": "True if device appears in a connected CMDB or MDM.",
+            "filterable": true
+          },
+          {
+            "field": "knownDevice",
+            "type": "boolean",
+            "description": "True if device identity was confirmed via integration.",
+            "filterable": true
+          }
+        ],
+        "software_and_services": [
+          {
+            "field": "softwareName",
+            "type": "string",
+            "description": "Installed software product name (requires EDR/MDM integration).",
+            "filterable": true
+          },
+          {
+            "field": "softwareVersion",
+            "type": "string",
+            "description": "Software version string.",
+            "filterable": true
+          },
+          {
+            "field": "runningServices",
+            "type": "array<string>",
+            "description": "Active services or open ports observed.",
+            "filterable": true
+          },
+          {
+            "field": "openPorts",
+            "type": "array<integer>",
+            "description": "TCP/UDP ports observed open on the device.",
+            "filterable": true
+          }
+        ],
+        "integration_enrichment": [
+          {
+            "field": "username",
+            "type": "string",
+            "description": "Associated username from EDR or directory integration.",
+            "filterable": true
+          },
+          {
+            "field": "userId",
+            "type": "string",
+            "description": "Unique user identifier.",
+            "filterable": true
+          },
+          {
+            "field": "domain",
+            "type": "string",
+            "description": "Active Directory domain.",
+            "filterable": true
+          },
+          {
+            "field": "crowdstrikeId",
+            "type": "string",
+            "description": "CrowdStrike Falcon device ID.",
+            "filterable": true
+          },
+          {
+            "field": "intigriti",
+            "type": "string",
+            "description": "ServiceNow CMDB CI identifier.",
+            "filterable": true
+          }
+        ]
+      }
+    },
+    "activity": {
+      "description": "Network behavioral events observed by Armis Gateways or inferred from integrations.",
+      "fields": {
+        "core": [
+          {
+            "field": "id",
+            "type": "string",
+            "description": "Unique activity event ID.",
+            "filterable": true
+          },
+          {
+            "field": "type",
+            "type": "string",
+            "description": "Activity type (e.g., HTTP, DNS, RDP, Modbus, BLE).",
+            "filterable": true
+          },
+          {
+            "field": "time",
+            "type": "datetime",
+            "description": "Timestamp of the activity event.",
+            "filterable": true
+          },
+          {
+            "field": "protocol",
+            "type": "string",
+            "description": "Network protocol.",
+            "filterable": true
+          },
+          {
+            "field": "port",
+            "type": "integer",
+            "description": "Destination port number.",
+            "filterable": true
+          }
+        ],
+        "device_context": [
+          {
+            "field": "deviceId",
+            "type": "integer",
+            "description": "ID of the source device.",
+            "filterable": true
+          },
+          {
+            "field": "deviceType",
+            "type": "string",
+            "description": "Type of the source device.",
+            "filterable": true
+          },
+          {
+            "field": "deviceName",
+            "type": "string",
+            "description": "Name of the source device.",
+            "filterable": true
+          },
+          {
+            "field": "deviceIpAddress",
+            "type": "string",
+            "description": "IP address of the source device.",
+            "filterable": true
+          },
+          {
+            "field": "deviceMacAddress",
+            "type": "string",
+            "description": "MAC of the source device.",
+            "filterable": true
+          },
+          {
+            "field": "deviceCategory",
+            "type": "string",
+            "description": "Category of the source device.",
+            "filterable": true
+          },
+          {
+            "field": "deviceManufacturer",
+            "type": "string",
+            "description": "Manufacturer of the source device.",
+            "filterable": true
+          },
+          {
+            "field": "deviceRiskLevel",
+            "type": "enum",
+            "description": "Risk level of the source device at time of activity.",
+            "filterable": true
+          }
+        ],
+        "connection_details": [
+          {
+            "field": "destinationIpAddress",
+            "type": "string",
+            "description": "Destination IP address.",
+            "filterable": true
+          },
+          {
+            "field": "destinationPort",
+            "type": "integer",
+            "description": "Destination TCP/UDP port.",
+            "filterable": true
+          },
+          {
+            "field": "destinationDeviceId",
+            "type": "integer",
+            "description": "Armis device ID of the destination.",
+            "filterable": true
+          },
+          {
+            "field": "destinationDeviceName",
+            "type": "string",
+            "description": "Name of the destination device.",
+            "filterable": true
+          },
+          {
+            "field": "destinationDeviceType",
+            "type": "string",
+            "description": "Device type of the destination.",
+            "filterable": true
+          },
+          {
+            "field": "direction",
+            "type": "enum",
+            "description": "Traffic direction: Inbound, Outbound, Internal.",
+            "filterable": true
+          }
+        ],
+        "protocol_specific": [
+          {
+            "field": "httpMethod",
+            "type": "string",
+            "description": "HTTP method (GET, POST, etc.).",
+            "filterable": true
+          },
+          {
+            "field": "httpUrl",
+            "type": "string",
+            "description": "HTTP URL path.",
+            "filterable": true
+          },
+          {
+            "field": "dnsQuery",
+            "type": "string",
+            "description": "DNS query string.",
+            "filterable": true
+          },
+          {
+            "field": "dnsResponseCode",
+            "type": "string",
+            "description": "DNS response code (NOERROR, NXDOMAIN, etc.).",
+            "filterable": true
+          },
+          {
+            "field": "tls",
+            "type": "boolean",
+            "description": "True if TLS/SSL was observed.",
+            "filterable": true
+          },
+          {
+            "field": "tlsVersion",
+            "type": "string",
+            "description": "TLS version (TLSv1.0, TLSv1.2, TLSv1.3).",
+            "filterable": true
+          },
+          {
+            "field": "userName",
+            "type": "string",
+            "description": "Username observed in protocol metadata.",
+            "filterable": true
+          }
+        ],
+        "timeframe": [
+          {
+            "field": "timeFrame",
+            "type": "string",
+            "description": "Restricts activity query to a rolling time window.",
+            "filterable": true,
+            "valid_values": [
+              "1 hour",
+              "3 hours",
+              "12 hours",
+              "24 hours",
+              "48 hours",
+              "7 days",
+              "14 days",
+              "30 days"
+            ]
+          }
+        ]
+      }
+    },
+    "alert": {
+      "description": "Policy violations, threat detections, and vulnerability alerts generated by Armis.",
+      "fields": {
+        "core": [
+          {
+            "field": "id",
+            "type": "integer",
+            "description": "Unique alert ID.",
+            "filterable": true
+          },
+          {
+            "field": "title",
+            "type": "string",
+            "description": "Alert title / policy name.",
+            "filterable": true
+          },
+          {
+            "field": "description",
+            "type": "string",
+            "description": "Alert description.",
+            "filterable": true
+          },
+          {
+            "field": "severity",
+            "type": "enum",
+            "description": "Alert severity: Critical, High, Medium, Low, Informational.",
+            "filterable": true
+          },
+          {
+            "field": "status",
+            "type": "enum",
+            "description": "Alert lifecycle status: Unhandled, In Progress, Resolved, Dismissed.",
+            "filterable": true
+          },
+          {
+            "field": "type",
+            "type": "enum",
+            "description": "Alert category: Policy, Threat, Vulnerability.",
+            "filterable": true
+          },
+          {
+            "field": "time",
+            "type": "datetime",
+            "description": "Time alert was generated.",
+            "filterable": true
+          },
+          {
+            "field": "lastUpdateTime",
+            "type": "datetime",
+            "description": "Last modification timestamp.",
+            "filterable": true
+          }
+        ],
+        "device_context": [
+          {
+            "field": "deviceId",
+            "type": "integer",
+            "description": "Associated device ID.",
+            "filterable": true
+          },
+          {
+            "field": "deviceName",
+            "type": "string",
+            "description": "Device display name.",
+            "filterable": true
+          },
+          {
+            "field": "deviceType",
+            "type": "string",
+            "description": "Device type.",
+            "filterable": true
+          },
+          {
+            "field": "deviceIpAddress",
+            "type": "string",
+            "description": "Device IP at time of alert.",
+            "filterable": true
+          }
+        ],
+        "policy_context": [
+          {
+            "field": "policyId",
+            "type": "integer",
+            "description": "ID of the policy that generated the alert.",
+            "filterable": true
+          },
+          {
+            "field": "policyTitle",
+            "type": "string",
+            "description": "Policy name.",
+            "filterable": true
+          },
+          {
+            "field": "activityUUID",
+            "type": "string",
+            "description": "UUID of the triggering activity event.",
+            "filterable": true
+          }
+        ],
+        "remediation": [
+          {
+            "field": "resolvedBy",
+            "type": "string",
+            "description": "Username who resolved the alert.",
+            "filterable": true
+          },
+          {
+            "field": "resolvedTime",
+            "type": "datetime",
+            "description": "Timestamp of alert resolution.",
+            "filterable": true
+          },
+          {
+            "field": "comment",
+            "type": "string",
+            "description": "Analyst comment on the alert.",
+            "filterable": true
+          }
+        ]
+      }
+    },
+    "vulnerability": {
+      "description": "CVE and platform vulnerability records associated with devices.",
+      "fields": {
+        "core": [
+          {
+            "field": "id",
+            "type": "string",
+            "description": "Vulnerability record ID.",
+            "filterable": true
+          },
+          {
+            "field": "cveId",
+            "type": "string",
+            "description": "CVE identifier (e.g., CVE-2021-44228).",
+            "filterable": true
+          },
+          {
+            "field": "title",
+            "type": "string",
+            "description": "Vulnerability title.",
+            "filterable": true
+          },
+          {
+            "field": "description",
+            "type": "string",
+            "description": "Vulnerability description.",
+            "filterable": true
+          },
+          {
+            "field": "severity",
+            "type": "enum",
+            "description": "Severity: Critical, High, Medium, Low.",
+            "filterable": true
+          },
+          {
+            "field": "cvssScore",
+            "type": "float",
+            "description": "CVSS base score (0.0\u201310.0).",
+            "filterable": true
+          },
+          {
+            "field": "cvssVector",
+            "type": "string",
+            "description": "CVSS vector string.",
+            "filterable": true
+          },
+          {
+            "field": "publishedDate",
+            "type": "datetime",
+            "description": "CVE publication date.",
+            "filterable": true
+          }
+        ],
+        "device_context": [
+          {
+            "field": "deviceId",
+            "type": "integer",
+            "description": "Associated device ID.",
+            "filterable": true
+          },
+          {
+            "field": "deviceType",
+            "type": "string",
+            "description": "Device type.",
+            "filterable": true
+          },
+          {
+            "field": "affectedSoftware",
+            "type": "string",
+            "description": "Affected software or component name.",
+            "filterable": true
+          },
+          {
+            "field": "affectedVersion",
+            "type": "string",
+            "description": "Affected version range.",
+            "filterable": true
+          }
+        ],
+        "remediation": [
+          {
+            "field": "patchAvailable",
+            "type": "boolean",
+            "description": "True if a patch exists.",
+            "filterable": true
+          },
+          {
+            "field": "patchLink",
+            "type": "string",
+            "description": "URL to vendor patch.",
+            "filterable": false
+          },
+          {
+            "field": "workaround",
+            "type": "string",
+            "description": "Vendor-recommended workaround.",
+            "filterable": false
+          }
+        ]
+      }
+    },
+    "connection": {
+      "description": "Observed network connections between devices.",
+      "fields": {
+        "core": [
+          {
+            "field": "id",
+            "type": "string",
+            "description": "Unique connection ID.",
+            "filterable": true
+          },
+          {
+            "field": "protocol",
+            "type": "string",
+            "description": "Network protocol.",
+            "filterable": true
+          },
+          {
+            "field": "port",
+            "type": "integer",
+            "description": "Destination port.",
+            "filterable": true
+          },
+          {
+            "field": "time",
+            "type": "datetime",
+            "description": "Observation timestamp.",
+            "filterable": true
+          },
+          {
+            "field": "bytesSent",
+            "type": "integer",
+            "description": "Bytes sent from source to destination.",
+            "filterable": true
+          },
+          {
+            "field": "bytesReceived",
+            "type": "integer",
+            "description": "Bytes received from destination.",
+            "filterable": true
+          }
+        ],
+        "endpoints": [
+          {
+            "field": "sourceDeviceId",
+            "type": "integer",
+            "description": "Source device Armis ID.",
+            "filterable": true
+          },
+          {
+            "field": "sourceIpAddress",
+            "type": "string",
+            "description": "Source IP.",
+            "filterable": true
+          },
+          {
+            "field": "sourcePort",
+            "type": "integer",
+            "description": "Source TCP/UDP port.",
+            "filterable": true
+          },
+          {
+            "field": "destinationDeviceId",
+            "type": "integer",
+            "description": "Destination device Armis ID.",
+            "filterable": true
+          },
+          {
+            "field": "destinationIpAddress",
+            "type": "string",
+            "description": "Destination IP.",
+            "filterable": true
+          },
+          {
+            "field": "destinationPort",
+            "type": "integer",
+            "description": "Destination TCP/UDP port.",
+            "filterable": true
+          }
+        ]
+      }
+    }
+  },
+  "detection_engineering": {
+    "policy_structure": {
+      "description": "Armis policies are the primary detection mechanism. Each policy consists of a trigger query, optional activity conditions, severity, and response actions.",
+      "required_fields": [
+        {
+          "field": "title",
+          "description": "Unique, descriptive name for the policy."
+        },
+        {
+          "field": "description",
+          "description": "What the policy detects and why it matters."
+        },
+        {
+          "field": "severity",
+          "description": "Critical | High | Medium | Low | Informational"
+        },
+        {
+          "field": "deviceQuery",
+          "description": "ASQ query scoping which devices the policy applies to."
+        },
+        {
+          "field": "activityQuery",
+          "description": "ASQ query defining the triggering activity (optional for device-state policies)."
+        },
+        {
+          "field": "enabled",
+          "description": "Boolean flag. Set to false during testing."
+        }
+      ],
+      "optional_fields": [
+        {
+          "field": "tags",
+          "description": "Classification tags for filtering and reporting."
+        },
+        {
+          "field": "mitreTactics",
+          "description": "MITRE ATT&CK tactic mapping."
+        },
+        {
+          "field": "mitreTechniques",
+          "description": "MITRE ATT&CK technique IDs."
+        },
+        {
+          "field": "actions",
+          "description": "Automated response actions: Webhook, ITSM ticket, NAC quarantine."
+        },
+        {
+          "field": "suppressionRules",
+          "description": "Conditions under which alert generation should be suppressed."
+        },
+        {
+          "field": "aggregationThreshold",
+          "description": "Minimum number of matching events before alert is generated."
+        }
+      ]
+    },
+    "policy_types": {
+      "device_state": {
+        "description": "Triggers when a device matches certain attribute conditions. No activity required.",
+        "use_cases": [
+          "Unmanaged device discovered on sensitive VLAN",
+          "Device with outdated OS detected",
+          "Device missing EDR agent"
+        ],
+        "example_query": "in:devices category:IoT network:\"VLAN-Prod\" NOT managed:true"
+      },
+      "activity_based": {
+        "description": "Triggers when a device performs specific network activity.",
+        "use_cases": [
+          "Medical device communicating to internet",
+          "PLC receiving commands from unexpected host",
+          "Cleartext protocol used on sensitive network"
+        ],
+        "example_query": "in:activity deviceType:\"PLC\" protocol:(Telnet,FTP,HTTP) NOT destinationIpAddress:10.*"
+      },
+      "combination": {
+        "description": "Device attribute conditions AND activity conditions must both be met.",
+        "use_cases": [
+          "Unpatched camera communicating to external IP",
+          "High-risk device generating large outbound transfer"
+        ],
+        "example_query": "in:activity deviceType:\"IP Camera\" deviceRiskLevel:High direction:Outbound NOT destinationIpAddress:(10.*,172.16.*,192.168.*)"
+      },
+      "vulnerability_based": {
+        "description": "Triggers on specific CVE or vulnerability conditions.",
+        "use_cases": [
+          "Device with Log4Shell exposure discovered",
+          "Critical CVE with network exposure on medical device"
+        ],
+        "example_query": "in:vulnerabilities cveId:CVE-2021-44228 deviceCategory:Medical"
+      }
+    },
+    "detection_patterns": {
+      "lateral_movement": {
+        "description": "Detect devices communicating across network segments they should not.",
+        "pattern": "in:activity deviceCategory:IoT destinationIpAddress:10.0.0.* NOT deviceIpAddress:10.0.0.*",
+        "notes": "Adjust IP ranges to match your network segmentation policy."
+      },
+      "command_and_control": {
+        "description": "Detect devices contacting known external IPs or suspicious destinations.",
+        "pattern": "in:activity NOT destinationIpAddress:(10.*,172.16.*,192.168.*,127.*) type:(DNS,HTTP,HTTPS) deviceCategory:(IoT,OT)",
+        "notes": "Combine with threat intelligence feed via integration for IOC matching."
+      },
+      "protocol_anomaly": {
+        "description": "Detect use of insecure protocols.",
+        "patterns": [
+          {
+            "name": "Cleartext Telnet",
+            "query": "in:activity protocol:Telnet"
+          },
+          {
+            "name": "Unencrypted FTP",
+            "query": "in:activity protocol:FTP"
+          },
+          {
+            "name": "Deprecated TLS",
+            "query": "in:activity tlsVersion:(TLSv1.0,TLSv1.1)"
+          },
+          {
+            "name": "HTTP on sensitive VLAN",
+            "query": "in:activity protocol:HTTP deviceNetwork:\"VLAN-Healthcare\""
+          }
+        ]
+      },
+      "unauthorized_access": {
+        "description": "Detect access to sensitive devices from unauthorized sources.",
+        "pattern": "in:activity deviceType:\"Medical Infusion Pump\" protocol:(RDP,SSH,Telnet)",
+        "notes": "Medical devices should not receive direct remote access connections."
+      },
+      "new_device_detection": {
+        "description": "Alert on newly discovered devices in sensitive environments.",
+        "pattern": "in:devices network:\"VLAN-OT\" firstSeen:>now-24h",
+        "notes": "firstSeen time-based filtering requires specific API usage; verify ASQ support in your tenant version."
+      },
+      "rogue_device": {
+        "description": "Device present on network but not in CMDB.",
+        "pattern": "in:devices managed:false network:\"VLAN-Corporate\" category:IT",
+        "notes": "Requires active CMDB integration (ServiceNow, Axonius, etc.)."
+      },
+      "data_exfiltration_indicator": {
+        "description": "Large outbound transfers from sensitive device types.",
+        "pattern": "in:connections sourceDeviceType:\"Medical Device\" direction:Outbound bytesReceived:>10000000 NOT destinationIpAddress:(10.*,172.16.*,192.168.*)",
+        "notes": "Threshold values (bytesReceived) should be tuned to your baseline."
+      },
+      "ot_it_boundary_crossing": {
+        "description": "OT device communicating directly with IT network.",
+        "pattern": "in:activity deviceCategory:OT destinationDeviceCategory:IT NOT destinationIpAddress:10.100.*",
+        "notes": "10.100.* should represent your approved OT-IT DMZ/jump server range."
+      }
+    },
+    "tuning_guidelines": {
+      "false_positive_reduction": [
+        "Use NOT clauses to exclude known-good destinations, manufacturers, or device types.",
+        "Add assignedSite or businessUnit filters to scope policies to relevant environments.",
+        "Use labels to mark known-good devices and exclude them: NOT labels:\"Approved-Exception\"",
+        "Implement aggregationThreshold to prevent single-event noise (require N occurrences).",
+        "Review alert history for patterns; if >80% of alerts are for same device/IP, add specific exclusion."
+      ],
+      "false_negative_reduction": [
+        "Audit coverage by running the inverse query (NOT yourPolicyQuery) to see what is excluded.",
+        "Validate that timeFrame clauses are not too narrow for infrequent attack patterns.",
+        "Ensure integration data is fresh \u2014 stale MDM/CMDB data can cause managed:true on compromised devices.",
+        "Test queries against historical data using the Armis search API before enabling policies."
+      ],
+      "performance_optimization": [
+        "Filter on indexed fields first: category, type, manufacturer, network, ipAddress.",
+        "Avoid leading wildcards: use name:server* not name:*server.",
+        "Narrow the device scope with specific network or site filters before adding activity conditions.",
+        "Use enum fields (severity, category, status) over string fields for high-frequency policy conditions.",
+        "Avoid regex on large device sets; prefer wildcard or exact match when possible."
+      ]
+    },
+    "testing_and_validation": {
+      "pre_deployment_checklist": [
+        "Run the ASQ query in the Armis Search UI and verify result count is reasonable.",
+        "Validate that query returns expected devices/activities using known-good test data.",
+        "Check for syntax errors using the Armis query parser feedback in the UI.",
+        "Review fields used \u2014 confirm all fields exist on the target entity type.",
+        "Test in a non-production tenant or with policy disabled=true before enabling.",
+        "Verify timeFrame clause behavior if the policy is time-window dependent.",
+        "Simulate the target activity in a lab environment and confirm the policy triggers.",
+        "Run an inverse query to check for unintended exclusions.",
+        "Check alert volume estimate: if >100 expected alerts/day, add additional specificity.",
+        "Document MITRE technique mapping and add to policy metadata before deployment."
+      ],
+      "validation_queries": {
+        "verify_device_scope": {
+          "description": "Confirm the device query returns expected devices.",
+          "example": "in:devices category:IoT network:\"VLAN-100\" NOT managed:true"
+        },
+        "verify_activity_matches": {
+          "description": "Confirm the activity condition fires on expected traffic.",
+          "example": "in:activity deviceCategory:IoT protocol:Telnet timeFrame:\"7 days\""
+        },
+        "check_alert_volume": {
+          "description": "Count how many alerts a policy would have generated historically.",
+          "method": "Run the policy's activity query with a 30-day timeFrame and count results via API."
+        },
+        "exclusion_audit": {
+          "description": "Verify NOT clauses are not over-excluding legitimate detections.",
+          "example": "in:activity deviceCategory:IoT protocol:Telnet timeFrame:\"7 days\" destinationIpAddress:10.*"
+        }
+      },
+      "api_testing": {
+        "endpoint": "POST /api/v1/search",
+        "headers": {
+          "Authorization": "ApiKey <your_api_key>",
+          "Content-Type": "application/json"
+        },
+        "body_template": {
+          "type": "devices | activity | alerts | vulnerabilities | connections",
+          "query": "<ASQ query string>",
+          "fields": [
+            "field1",
+            "field2"
+          ],
+          "from": 0,
+          "size": 100
+        },
+        "pagination": {
+          "description": "Use from and size for pagination. Maximum size per request is 1000.",
+          "notes": "Use scroll API for result sets >10,000 records."
+        }
+      }
+    }
+  },
+  "mitre_attack_mapping": {
+    "description": "Standard MITRE ATT&CK technique-to-ASQ pattern mappings for detection coverage tracking.",
+    "mappings": [
+      {
+        "technique_id": "T1040",
+        "technique": "Network Sniffing",
+        "tactic": "Credential Access",
+        "asq_pattern": "in:activity protocol:(Telnet,FTP,HTTP) NOT tls:true",
+        "notes": "Cleartext protocol usage indicative of credential exposure risk."
+      },
+      {
+        "technique_id": "T1078",
+        "technique": "Valid Accounts",
+        "tactic": "Initial Access, Lateral Movement",
+        "asq_pattern": "in:activity protocol:(RDP,SSH,SMB) timeFrame:\"1 hour\" deviceType:\"Server\"",
+        "notes": "High-frequency auth protocol activity may indicate credential reuse."
+      },
+      {
+        "technique_id": "T1071.001",
+        "technique": "Application Layer Protocol: Web Protocols",
+        "tactic": "Command and Control",
+        "asq_pattern": "in:activity protocol:(HTTP,HTTPS) deviceCategory:(IoT,OT,Medical) NOT destinationIpAddress:(10.*,172.16.*,192.168.*)",
+        "notes": "Embedded/OT devices making outbound web requests to internet."
+      },
+      {
+        "technique_id": "T1190",
+        "technique": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+        "asq_pattern": "in:vulnerabilities severity:(Critical,High) cvssVector:*AV:N* patchAvailable:false",
+        "notes": "Devices with network-exploitable CVEs without available patches."
+      },
+      {
+        "technique_id": "T1021.001",
+        "technique": "Remote Desktop Protocol",
+        "tactic": "Lateral Movement",
+        "asq_pattern": "in:activity protocol:RDP destinationDeviceCategory:(OT,Medical,IoT)",
+        "notes": "RDP directed at OT/Medical/IoT devices is high-risk lateral movement indicator."
+      },
+      {
+        "technique_id": "T1046",
+        "technique": "Network Service Scanning",
+        "tactic": "Discovery",
+        "asq_pattern": "in:activity deviceType:\"Unknown\" destinationPort:(22,23,80,443,445,3389,8080,8443) timeFrame:\"1 hour\"",
+        "notes": "Unknown devices probing common service ports."
+      },
+      {
+        "technique_id": "T1048",
+        "technique": "Exfiltration Over Alternative Protocol",
+        "tactic": "Exfiltration",
+        "asq_pattern": "in:connections sourceDeviceCategory:Medical direction:Outbound bytesReceived:>5000000 NOT destinationIpAddress:(10.*,172.16.*,192.168.*)",
+        "notes": "Large outbound transfers from medical devices to internet."
+      },
+      {
+        "technique_id": "T1200",
+        "technique": "Hardware Additions",
+        "tactic": "Initial Access",
+        "asq_pattern": "in:devices firstSeen:>now-1h NOT managed:true network:\"VLAN-Secure\"",
+        "notes": "Newly observed unmanaged devices on secure VLANs."
+      }
+    ]
+  },
+  "reference_quick_cards": {
+    "asq_cheatsheet": {
+      "entity_prefixes": {
+        "devices": "in:devices",
+        "activity": "in:activity",
+        "alerts": "in:alerts",
+        "vulnerabilities": "in:vulnerabilities",
+        "connections": "in:connections"
+      },
+      "common_filters": {
+        "by_type": "type:\"IP Camera\"",
+        "by_category": "category:Medical",
+        "by_ip": "ipAddress:192.168.*",
+        "by_risk": "riskScore:>70",
+        "by_managed": "managed:false",
+        "by_severity": "severity:High",
+        "by_protocol": "protocol:(RDP,SSH)",
+        "by_site": "assignedSite:\"Building-A\"",
+        "by_network": "network:\"VLAN-OT\"",
+        "field_exists": "_exists_:username",
+        "timewindow": "timeFrame:\"24 hours\"",
+        "multi_value": "type:(Laptop,Desktop,Workstation)"
+      },
+      "operators": {
+        "AND": "Both conditions true",
+        "OR": "Either condition true",
+        "NOT": "Negate condition",
+        "*": "Multi-char wildcard",
+        "?": "Single-char wildcard",
+        ":>": "Greater than (numeric)",
+        ":<": "Less than (numeric)",
+        ":/regex/": "Regex match",
+        ":[A TO B]": "Inclusive range"
+      }
+    },
+    "severity_decision_matrix": {
+      "Critical": "Immediate threat to patient safety, production systems, or confirmed active exploitation.",
+      "High": "High-risk behavior or significant vulnerability with network exposure.",
+      "Medium": "Policy violation or vulnerability requiring attention within 72 hours.",
+      "Low": "Informational finding or hygiene issue with low exploitability.",
+      "Informational": "Baseline visibility, inventory, or context-only alert."
+    },
+    "field_type_matrix": {
+      "string_fields": [
+        "name",
+        "type",
+        "category",
+        "manufacturer",
+        "operatingSystem",
+        "network",
+        "assignedSite"
+      ],
+      "integer_fields": [
+        "riskScore",
+        "vulnerabilitiesCount",
+        "criticalVulnerabilitiesCount",
+        "port",
+        "destinationPort"
+      ],
+      "float_fields": [
+        "cvssScore"
+      ],
+      "boolean_fields": [
+        "managed",
+        "knownDevice",
+        "wifi",
+        "tls",
+        "patchAvailable"
+      ],
+      "datetime_fields": [
+        "lastSeen",
+        "firstSeen",
+        "time",
+        "lastUpdateTime",
+        "publishedDate"
+      ],
+      "enum_fields": [
+        "severity",
+        "status",
+        "riskLevel",
+        "visibility",
+        "direction",
+        "patchLevel"
+      ],
+      "array_fields": [
+        "tags",
+        "labels",
+        "macAddresses",
+        "ipAddresses",
+        "openPorts",
+        "runningServices"
+      ]
+    }
+  },
+  "common_errors": {
+    "parse_errors": [
+      {
+        "error": "Unexpected token in query",
+        "cause": "Unmatched parentheses, missing quotes around multi-word values, or unsupported operators.",
+        "fix": "Wrap multi-word values in double quotes: type:\"IP Camera\" not type:IP Camera."
+      },
+      {
+        "error": "Field not found",
+        "cause": "Field name typo or field not available on the queried entity type.",
+        "fix": "Refer to data model field reference. Confirm entity type in the 'in:' clause."
+      },
+      {
+        "error": "Invalid operator for field type",
+        "cause": "Using numeric operators (>, <) on string fields.",
+        "fix": "Use :> and :< only on numeric fields (riskScore, cvssScore, bytesReceived)."
+      },
+      {
+        "error": "timeFrame not supported",
+        "cause": "timeFrame used on device entity instead of activity/alert/connection.",
+        "fix": "timeFrame is only valid for in:activity, in:alerts, in:connections."
+      }
+    ],
+    "logical_errors": [
+      {
+        "error": "Policy never fires",
+        "causes": [
+          "Query too restrictive \u2014 no devices/activities match.",
+          "Activity condition requires a timeFrame but none specified.",
+          "Policy is disabled.",
+          "Field value casing issue."
+        ],
+        "diagnostic": "Run the query in Search UI. If 0 results, broaden one clause at a time."
+      },
+      {
+        "error": "Policy fires on wrong devices",
+        "causes": [
+          "Missing NOT clause for known-good exclusions.",
+          "Wildcard too broad.",
+          "Category field value incorrect."
+        ],
+        "diagnostic": "Inspect alert device list. Add specific exclusion clauses."
+      },
+      {
+        "error": "Excessive false positives",
+        "causes": [
+          "OR logic too broad.",
+          "Missing site/network scope.",
+          "Single event threshold (no aggregationThreshold)."
+        ],
+        "fix": "Add network scope, increase aggregationThreshold, add NOT exclusions."
+      }
+    ],
+    "performance_issues": [
+      {
+        "issue": "Query times out",
+        "causes": [
+          "Leading wildcard on high-cardinality field.",
+          "Regex on large device set.",
+          "No indexed field in first clause."
+        ],
+        "fix": "Reorder clauses to filter on category or type first. Replace regex with wildcard."
+      },
+      {
+        "issue": "Slow policy evaluation",
+        "causes": [
+          "Continuous evaluation mode on very broad device scope.",
+          "Complex multi-level OR chains."
+        ],
+        "fix": "Add network or site scope. Simplify OR chains. Switch to scheduled evaluation."
+      }
+    ]
+  },
+  "output_formatting": {
+    "alert_output": {
+      "description": "Standard fields to include in all exported alert records.",
+      "required_fields": [
+        "id",
+        "title",
+        "severity",
+        "status",
+        "type",
+        "time",
+        "deviceId",
+        "deviceName",
+        "deviceType",
+        "deviceIpAddress"
+      ],
+      "recommended_enrichment_fields": [
+        "policyId",
+        "policyTitle",
+        "activityUUID",
+        "deviceManufacturer",
+        "network",
+        "assignedSite",
+        "riskScore"
+      ],
+      "timestamp_format": "ISO 8601 (UTC): YYYY-MM-DDTHH:MM:SSZ",
+      "severity_normalization": {
+        "description": "Map Armis severities to SIEM/SOAR standard severity integers.",
+        "mapping": {
+          "Critical": 5,
+          "High": 4,
+          "Medium": 3,
+          "Low": 2,
+          "Informational": 1
+        }
+      }
+    },
+    "siem_integration_format": {
+      "description": "Recommended field mapping for SIEM ingestion (CEF / Syslog / JSON).",
+      "cef_mapping": {
+        "deviceVendor": "Armis",
+        "deviceProduct": "Centrix",
+        "deviceVersion": "<tenant_version>",
+        "signatureId": "policyId",
+        "name": "title",
+        "severity": "severity (0-10 scale)",
+        "src": "deviceIpAddress",
+        "smac": "deviceMacAddress",
+        "dhost": "destinationDeviceName",
+        "dst": "destinationIpAddress",
+        "proto": "protocol",
+        "dpt": "destinationPort",
+        "start": "time"
+      },
+      "json_schema": {
+        "schema_version": "1.0",
+        "required": [
+          "alert_id",
+          "title",
+          "severity",
+          "status",
+          "timestamp",
+          "device"
+        ],
+        "example": {
+          "alert_id": 98765,
+          "title": "Medical Device Communicating to External IP",
+          "severity": "High",
+          "status": "Unhandled",
+          "timestamp": "2025-02-10T14:32:00Z",
+          "policy_id": 1234,
+          "device": {
+            "id": 56789,
+            "name": "INFUSION-PUMP-04",
+            "type": "Medical Infusion Pump",
+            "category": "Medical",
+            "ip_address": "192.168.20.44",
+            "mac_address": "DE:AD:BE:EF:00:01",
+            "manufacturer": "Baxter",
+            "risk_score": 82,
+            "site": "Building-A-ICU"
+          },
+          "activity": {
+            "protocol": "HTTPS",
+            "destination_ip": "203.0.113.50",
+            "destination_port": 443,
+            "direction": "Outbound"
+          },
+          "mitre": {
+            "tactics": [
+              "Command and Control"
+            ],
+            "techniques": [
+              "T1071.001"
+            ]
+          }
+        }
+      }
+    },
+    "report_output_standards": {
+      "device_inventory_report": {
+        "required_columns": [
+          "deviceId",
+          "name",
+          "type",
+          "category",
+          "manufacturer",
+          "ipAddress",
+          "macAddress",
+          "operatingSystem",
+          "riskScore",
+          "lastSeen",
+          "network",
+          "managed"
+        ],
+        "sort_default": "riskScore desc",
+        "group_by_recommendation": "category, then network"
+      },
+      "vulnerability_report": {
+        "required_columns": [
+          "cveId",
+          "severity",
+          "cvssScore",
+          "title",
+          "affectedSoftware",
+          "affectedVersion",
+          "deviceId",
+          "deviceName",
+          "deviceType",
+          "patchAvailable"
+        ],
+        "sort_default": "cvssScore desc",
+        "filter_recommendation": "severity:(Critical,High)"
+      },
+      "alert_trend_report": {
+        "required_columns": [
+          "time",
+          "title",
+          "severity",
+          "deviceType",
+          "network",
+          "status"
+        ],
+        "aggregation": "Count by day and severity",
+        "format": "Time-series JSON or CSV for SIEM ingestion"
+      }
+    },
+    "api_response_pagination": {
+      "standard_page_size": 100,
+      "max_page_size": 1000,
+      "pagination_fields": {
+        "from": "Zero-based offset for results.",
+        "size": "Number of results to return.",
+        "total": "Total matching result count returned in response.",
+        "next_from": "from + size (compute client-side)"
+      }
+    }
+  }
+}

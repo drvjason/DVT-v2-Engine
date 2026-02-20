@@ -1,0 +1,32 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# CODEOWNERS — GitHub Code Review Enforcement
+#
+# All paths listed here require review from the specified team before
+# any PR can be merged. Configure in GitHub Settings → Branches → 
+# Branch protection rules → "Require review from Code Owners".
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Default: detection engineering leads review everything
+*                                           @your-org/detection-engineering-leads
+
+# Core application logic
+app.py                                      @your-org/detection-engineering-leads
+detection_validator.py                      @your-org/detection-engineering-leads
+
+# Knowledge bases: require both DE leads and KM team
+knowledge_bases/                            @your-org/detection-engineering-leads @your-org/knowledge-management
+
+# CI/CD pipelines: require platform/DevOps team sign-off
+.github/workflows/                          @your-org/platform-engineering @your-org/detection-engineering-leads
+
+# Security-sensitive files: require security team review
+nginx/nginx.conf                            @your-org/platform-engineering @your-org/security
+docker-compose_prod.yml                     @your-org/platform-engineering @your-org/security
+Dockerfile                                  @your-org/platform-engineering
+
+# Test suite: DE leads must approve test coverage changes
+tests/                                      @your-org/detection-engineering-leads
+
+# Dependency changes: security team must approve
+requirements.txt                            @your-org/security @your-org/detection-engineering-leads
+requirements-dev.txt                        @your-org/security @your-org/detection-engineering-leads

@@ -1,0 +1,35 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# RuleForge DVT Engine — pyproject.toml
+# Tool configuration for ruff, black, isort, mypy, bandit
+# ─────────────────────────────────────────────────────────────────────────────
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "S", "B"]
+ignore = [
+    "S101",   # assert statements — used in detection_validator.py intentionally
+    "S603",   # subprocess — not used in this project
+    "E501",   # line too long — black handles this
+]
+per-file-ignores = { "tests/*" = ["S101", "S106"] }
+
+[tool.mypy]
+python_version = "3.11"
+strict = false           # Relax from strict; tighten as codebase matures
+ignore_missing_imports = true
+exclude = ["tests/"]
+
+[tool.bandit]
+skips = ["B101", "B601"]   # B101=assert, B601=paramiko (not used)
+exclude_dirs = ["tests", ".venv"]

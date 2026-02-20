@@ -1,0 +1,1886 @@
+{
+  "metadata": {
+    "title": "Palo Alto Networks PAN-OS Firewall Knowledge Base",
+    "purpose": "Reference guide for detection rule building, log parsing, SIEM field mapping, and security profile tuning",
+    "validated_against": "Official Palo Alto Networks PAN-OS documentation (versions 10.x through 12.1)",
+    "last_validated": "2026-02-17",
+    "applicable_panos_versions": [
+      "10.1",
+      "10.2",
+      "11.0",
+      "11.1",
+      "11.2",
+      "12.1"
+    ],
+    "schema_version": "1.0",
+    "kb_updated_at": "2025-01-01"
+  },
+  "log_architecture": {
+    "overview": "PAN-OS generates several distinct log types. URL, WildFire, and Data Filtering logs are NOT independent types \u2014 they are subtypes of the Threat log distinguished by the subtype field.",
+    "export_formats": [
+      "CSV (default)",
+      "CEF",
+      "LEEF",
+      "JSON (via Strata Logging Service)"
+    ],
+    "log_structure": "Line-based, comma-separated fields in a fixed order per log type. Syslog messages contain a syslog header (facility, severity, timestamp, hostname) followed by the PAN-OS payload. Empty fields appear as blank entries between commas.",
+    "log_types": {
+      "traffic": {
+        "description": "Session start and end records for flows evaluated by security rules",
+        "syslog_type_value": "TRAFFIC",
+        "subtypes": [
+          "start",
+          "end",
+          "drop",
+          "deny"
+        ],
+        "key_fields": [
+          "src",
+          "dst",
+          "sport",
+          "dport",
+          "app",
+          "action",
+          "rule",
+          "rule_uuid",
+          "sessionid",
+          "bytes",
+          "bytes_sent",
+          "bytes_received",
+          "packets",
+          "elapsed",
+          "from",
+          "to",
+          "vsys",
+          "srcuser",
+          "dstuser",
+          "inbound_if",
+          "outbound_if",
+          "session_end_reason",
+          "src_dag",
+          "dst_dag",
+          "natdst",
+          "natsrc",
+          "natsport",
+          "natdport",
+          "proto"
+        ],
+        "notes": {
+          "drop_vs_deny": "A 'drop' indicates the rule specified 'any' application and blocked before app identification. A 'deny' indicates a specific application was identified and blocked by the rule.",
+          "not_applicable": "If the firewall drops traffic before identifying the application, the Application column displays 'not-applicable'.",
+          "http2_behavior": "When Decryption logs (PAN-OS 11.0+) are disabled, HTTP/2 logs appear as Traffic logs. When enabled, they appear as Tunnel Inspection logs."
+        }
+      },
+      "threat": {
+        "description": "Generated when traffic matches a Security Profile. This is the parent log type for URL, WildFire, virus, spyware, vulnerability, and data filtering events.",
+        "syslog_type_value": "THREAT",
+        "subtypes": {
+          "virus": {
+            "description": "Antivirus detections for malware in traffic streams (HTTP, SMTP, FTP, SMB, etc.)",
+            "triggered_by": "Antivirus Security Profile"
+          },
+          "spyware": {
+            "description": "Anti-Spyware detections including C2 callbacks, phone-home traffic, and DNS-based threats",
+            "triggered_by": "Anti-Spyware Security Profile"
+          },
+          "vulnerability": {
+            "description": "Exploit attempts matching vulnerability protection signatures",
+            "triggered_by": "Vulnerability Protection Security Profile",
+            "notes": "New signatures may initially ship with 'alert' default action. Palo Alto observes behavior before escalating to blocking actions like reset-both or drop."
+          },
+          "url": {
+            "description": "Web access events with URL, URL category, user, application, and action. Highest-frequency threat subtype.",
+            "triggered_by": "URL Filtering Security Profile",
+            "key_fields_additional": [
+              "url",
+              "category",
+              "content_type"
+            ]
+          },
+          "wildfire": {
+            "description": "Files and links analyzed by WildFire sandbox",
+            "triggered_by": "WildFire Analysis Security Profile",
+            "key_fields_additional": [
+              "filedigest",
+              "filename",
+              "cloud_verdict"
+            ],
+            "verdicts": [
+              "malicious",
+              "grayware",
+              "phishing",
+              "benign"
+            ]
+          },
+          "data": {
+            "description": "Sensitive data pattern or file type matches from Data Filtering profiles",
+            "triggered_by": "Data Filtering Security Profile",
+            "key_fields_additional": [
+              "data_pattern_type",
+              "direction"
+            ]
+          },
+          "flood": {
+            "description": "DoS protection events",
+            "triggered_by": "DoS Protection Profile"
+          },
+          "scan": {
+            "description": "Zone protection scan detections",
+            "triggered_by": "Zone Protection Profile"
+          },
+          "wildfire-virus": {
+            "description": "Malware detected via WildFire-generated signatures",
+            "triggered_by": "Antivirus Profile with WildFire signatures"
+          }
+        },
+        "key_fields": [
+          "type",
+          "subtype",
+          "threatid",
+          "severity",
+          "thr_category",
+          "action",
+          "direction",
+          "misc",
+          "category",
+          "src",
+          "dst",
+          "sport",
+          "dport",
+          "app",
+          "rule",
+          "sessionid",
+          "srcuser",
+          "dstuser",
+          "from",
+          "to",
+          "vsys",
+          "filedigest",
+          "cloud",
+          "url_idx"
+        ],
+        "critical_note": "URL logs, WildFire logs, and Data Filtering logs are subtypes of Threat logs \u2014 NOT independent log types. The PAN-OS GUI shows separate views for convenience, but at the syslog/export level they share log type THREAT."
+      },
+      "system": {
+        "description": "Device health and system events including HA failover, process restarts, commits, NTP, licensing, dynamic updates",
+        "syslog_type_value": "SYSTEM",
+        "key_fields": [
+          "subtype",
+          "eventid",
+          "object",
+          "module",
+          "severity",
+          "description"
+        ],
+        "severity_levels": [
+          "informational",
+          "low",
+          "medium",
+          "high",
+          "critical"
+        ]
+      },
+      "configuration": {
+        "description": "Administrative configuration changes",
+        "syslog_type_value": "CONFIG",
+        "key_fields": [
+          "admin",
+          "client",
+          "cmd",
+          "path",
+          "before_change_detail",
+          "after_change_detail",
+          "result",
+          "comment"
+        ],
+        "client_types": [
+          "Web",
+          "CLI",
+          "Panorama",
+          "XML API",
+          "REST API"
+        ]
+      },
+      "decryption": {
+        "description": "SSL/TLS decryption events. Introduced in PAN-OS 11.0.",
+        "syslog_type_value": "DECRYPTION",
+        "minimum_panos_version": "11.0",
+        "key_fields": [
+          "src",
+          "dst",
+          "sport",
+          "dport",
+          "app",
+          "rule",
+          "decryption_rule",
+          "tls_version",
+          "certificate_serial",
+          "certificate_subject",
+          "error"
+        ],
+        "notes": "When Decryption logs are enabled, HTTP/2 events are sent as Tunnel Inspection logs. When disabled, they revert to Traffic logs."
+      },
+      "hip_match": {
+        "description": "Host Information Profile matches for GlobalProtect endpoints",
+        "syslog_type_value": "HIPMATCH"
+      },
+      "globalprotect": {
+        "description": "VPN connection, gateway, and portal events",
+        "syslog_type_value": "GLOBALPROTECT"
+      },
+      "tunnel_inspection": {
+        "description": "Inspected tunnel traffic events (GRE, HTTP/2 when Decryption logs enabled)",
+        "syslog_type_value": "TUNNEL"
+      },
+      "userid": {
+        "description": "IP-to-user mapping events from User-ID",
+        "syslog_type_value": "USERID"
+      },
+      "iptag": {
+        "description": "Dynamic address tagging events",
+        "syslog_type_value": "IPTAG"
+      },
+      "authentication": {
+        "description": "Authentication policy and GlobalProtect auth events",
+        "syslog_type_value": "AUTH"
+      },
+      "correlation": {
+        "description": "Output from the Automated Correlation Engine when correlation objects match patterns across logs",
+        "syslog_type_value": "CORRELATION"
+      },
+      "gtp": {
+        "description": "GPRS Tunneling Protocol inspection events (mobile networks)",
+        "syslog_type_value": "GTP"
+      },
+      "sctp": {
+        "description": "Stream Control Transmission Protocol inspection events (mobile networks)",
+        "syslog_type_value": "SCTP"
+      },
+      "audit": {
+        "description": "Detailed administrative audit trail",
+        "syslog_type_value": "AUDIT"
+      }
+    }
+  },
+  "field_reference": {
+    "naming_conventions": {
+      "note": "Syslog/CEF export metakey names differ from GUI/CLI filter field names. This section documents both.",
+      "examples": {
+        "source_ip": {
+          "syslog_metakey": "src",
+          "gui_filter_name": "addr.src"
+        },
+        "destination_ip": {
+          "syslog_metakey": "dst",
+          "gui_filter_name": "addr.dst"
+        },
+        "source_port": {
+          "syslog_metakey": "sport",
+          "gui_filter_name": "port.src"
+        },
+        "destination_port": {
+          "syslog_metakey": "dport",
+          "gui_filter_name": "port.dst"
+        },
+        "source_zone": {
+          "syslog_metakey": "from",
+          "gui_filter_name": "zone.src"
+        },
+        "destination_zone": {
+          "syslog_metakey": "to",
+          "gui_filter_name": "zone.dst"
+        },
+        "source_user": {
+          "syslog_metakey": "srcuser",
+          "gui_filter_name": "user.src"
+        },
+        "destination_user": {
+          "syslog_metakey": "dstuser",
+          "gui_filter_name": "user.dst"
+        }
+      }
+    },
+    "fields_by_category": {
+      "identity_and_endpoints": [
+        {
+          "name": "Source IP",
+          "syslog_key": "src",
+          "gui_filter": "addr.src",
+          "description": "Source IP address of the session",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "Destination IP",
+          "syslog_key": "dst",
+          "gui_filter": "addr.dst",
+          "description": "Destination IP address of the session",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "Source Port",
+          "syslog_key": "sport",
+          "gui_filter": "port.src",
+          "description": "Source port number",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "Destination Port",
+          "syslog_key": "dport",
+          "gui_filter": "port.dst",
+          "description": "Destination port number",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "Source User",
+          "syslog_key": "srcuser",
+          "gui_filter": "user.src",
+          "description": "Username associated with the source IP (from User-ID)",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "Destination User",
+          "syslog_key": "dstuser",
+          "gui_filter": "user.dst",
+          "description": "Username associated with the destination IP",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "NAT Source IP",
+          "syslog_key": "natsrc",
+          "gui_filter": null,
+          "description": "Post-NAT source IP",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "NAT Destination IP",
+          "syslog_key": "natdst",
+          "gui_filter": null,
+          "description": "Post-NAT destination IP",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "NAT Source Port",
+          "syslog_key": "natsport",
+          "gui_filter": null,
+          "description": "Post-NAT source port",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "NAT Destination Port",
+          "syslog_key": "natdport",
+          "gui_filter": null,
+          "description": "Post-NAT destination port",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        }
+      ],
+      "network_path_and_segmentation": [
+        {
+          "name": "Source Zone",
+          "syslog_key": "from",
+          "gui_filter": "zone.src",
+          "description": "Source security zone",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "Destination Zone",
+          "syslog_key": "to",
+          "gui_filter": "zone.dst",
+          "description": "Destination security zone",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "Virtual System",
+          "syslog_key": "vsys",
+          "gui_filter": "vsys",
+          "description": "Virtual system identifier (e.g., vsys1)",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "Inbound Interface",
+          "syslog_key": "inbound_if",
+          "gui_filter": null,
+          "description": "Ingress interface (e.g., ethernet1/1)",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "Outbound Interface",
+          "syslog_key": "outbound_if",
+          "gui_filter": null,
+          "description": "Egress interface",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "Source DAG",
+          "syslog_key": "src_dag",
+          "gui_filter": null,
+          "description": "Source Dynamic Address Group",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "Destination DAG",
+          "syslog_key": "dst_dag",
+          "gui_filter": null,
+          "description": "Destination Dynamic Address Group",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "Protocol",
+          "syslog_key": "proto",
+          "gui_filter": "proto",
+          "description": "IP protocol (tcp, udp, icmp, etc.)",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        }
+      ],
+      "policy_and_session": [
+        {
+          "name": "Rule Name",
+          "syslog_key": "rule",
+          "gui_filter": "rule",
+          "description": "Name of the security rule that matched",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "Rule UUID",
+          "syslog_key": "rule_uuid",
+          "gui_filter": "rule_uuid",
+          "description": "Unique rule identifier (persists across renames)",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "Session ID",
+          "syslog_key": "sessionid",
+          "gui_filter": "sessionid",
+          "description": "Unique session identifier for correlating across log types",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "Action",
+          "syslog_key": "action",
+          "gui_filter": "action",
+          "description": "Outcome of the policy evaluation",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "Log Forwarding Profile",
+          "syslog_key": "logset",
+          "gui_filter": null,
+          "description": "Name of the log forwarding profile applied",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "Repeat Count",
+          "syslog_key": "repeatcnt",
+          "gui_filter": null,
+          "description": "Number of sessions with same src, dst, app, and subtype seen within 5 seconds",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "Receive Time",
+          "syslog_key": "receive_time",
+          "gui_filter": "receive_time",
+          "description": "Time the log was received by the management plane",
+          "log_types": [
+            "traffic",
+            "threat",
+            "system",
+            "config"
+          ]
+        },
+        {
+          "name": "Generated Time",
+          "syslog_key": "generated_time",
+          "gui_filter": null,
+          "description": "Time the log was generated on the data plane",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "Start Time",
+          "syslog_key": "start",
+          "gui_filter": null,
+          "description": "Session start time",
+          "log_types": [
+            "traffic"
+          ]
+        },
+        {
+          "name": "Elapsed Time",
+          "syslog_key": "elapsed",
+          "gui_filter": null,
+          "description": "Session duration in seconds",
+          "log_types": [
+            "traffic"
+          ]
+        },
+        {
+          "name": "Serial Number",
+          "syslog_key": "serial",
+          "gui_filter": "serial",
+          "description": "Firewall serial number",
+          "log_types": [
+            "traffic",
+            "threat",
+            "system",
+            "config"
+          ]
+        }
+      ],
+      "volume_and_directionality": [
+        {
+          "name": "Bytes Total",
+          "syslog_key": "bytes",
+          "gui_filter": "bytes",
+          "description": "Total bytes (sent + received)",
+          "log_types": [
+            "traffic"
+          ]
+        },
+        {
+          "name": "Bytes Sent",
+          "syslog_key": "bytes_sent",
+          "gui_filter": null,
+          "description": "Bytes from client to server",
+          "log_types": [
+            "traffic"
+          ]
+        },
+        {
+          "name": "Bytes Received",
+          "syslog_key": "bytes_received",
+          "gui_filter": null,
+          "description": "Bytes from server to client",
+          "log_types": [
+            "traffic"
+          ]
+        },
+        {
+          "name": "Packets",
+          "syslog_key": "packets",
+          "gui_filter": "packets",
+          "description": "Total packet count",
+          "log_types": [
+            "traffic"
+          ]
+        },
+        {
+          "name": "Packets Sent",
+          "syslog_key": "pkts_sent",
+          "gui_filter": null,
+          "description": "Packets from client to server",
+          "log_types": [
+            "traffic"
+          ]
+        },
+        {
+          "name": "Packets Received",
+          "syslog_key": "pkts_received",
+          "gui_filter": null,
+          "description": "Packets from server to client",
+          "log_types": [
+            "traffic"
+          ]
+        },
+        {
+          "name": "Session End Reason",
+          "syslog_key": "session_end_reason",
+          "gui_filter": null,
+          "description": "Why the session ended",
+          "log_types": [
+            "traffic"
+          ]
+        }
+      ],
+      "application_and_web": [
+        {
+          "name": "Application",
+          "syslog_key": "app",
+          "gui_filter": "app",
+          "description": "Identified application (e.g., ssl, web-browsing, facebook-base, dns)",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "Application Category",
+          "syslog_key": "category_of_app",
+          "gui_filter": null,
+          "description": "Application category (e.g., networking, business-systems)",
+          "log_types": [
+            "traffic"
+          ]
+        },
+        {
+          "name": "Application Subcategory",
+          "syslog_key": "subcategory_of_app",
+          "gui_filter": null,
+          "description": "Application subcategory (e.g., infrastructure, file-sharing)",
+          "log_types": [
+            "traffic"
+          ]
+        },
+        {
+          "name": "Application Technology",
+          "syslog_key": "technology_of_app",
+          "gui_filter": null,
+          "description": "Application technology (e.g., browser-based, client-server)",
+          "log_types": [
+            "traffic"
+          ]
+        },
+        {
+          "name": "Application Risk",
+          "syslog_key": "risk_of_app",
+          "gui_filter": null,
+          "description": "Application risk level (1-5)",
+          "log_types": [
+            "traffic"
+          ]
+        },
+        {
+          "name": "Tunneled Application",
+          "syslog_key": "tunneled_app",
+          "gui_filter": null,
+          "description": "Application running inside another application",
+          "log_types": [
+            "traffic"
+          ]
+        },
+        {
+          "name": "URL",
+          "syslog_key": "misc",
+          "gui_filter": "misc",
+          "description": "Full URL string (in Threat/URL logs) or filename/additional details",
+          "log_types": [
+            "threat"
+          ]
+        },
+        {
+          "name": "URL Category",
+          "syslog_key": "category",
+          "gui_filter": "category",
+          "description": "URL category (malware, phishing, business-and-economy, etc.)",
+          "log_types": [
+            "threat"
+          ]
+        }
+      ],
+      "threat_specific": [
+        {
+          "name": "Log Type",
+          "syslog_key": "type",
+          "gui_filter": "type",
+          "description": "TRAFFIC or THREAT",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "Subtype",
+          "syslog_key": "subtype",
+          "gui_filter": "subtype",
+          "description": "Threat subtype (virus, spyware, vulnerability, url, wildfire, data, flood, scan, wildfire-virus)",
+          "log_types": [
+            "threat"
+          ]
+        },
+        {
+          "name": "Threat ID",
+          "syslog_key": "threatid",
+          "gui_filter": "threatid",
+          "description": "Signature or event identifier. Format: 'Name(ID)' e.g., 'Suspicious DNS Query(15000)'",
+          "log_types": [
+            "threat"
+          ]
+        },
+        {
+          "name": "Severity",
+          "syslog_key": "severity",
+          "gui_filter": "severity",
+          "description": "Threat severity: informational, low, medium, high, critical",
+          "log_types": [
+            "threat"
+          ]
+        },
+        {
+          "name": "Threat Category",
+          "syslog_key": "thr_category",
+          "gui_filter": "thr_category",
+          "description": "Higher-level threat category (e.g., brute-force, command-and-control, exploit, info-leak, net-worm)",
+          "log_types": [
+            "threat"
+          ]
+        },
+        {
+          "name": "Direction",
+          "syslog_key": "direction",
+          "gui_filter": "direction",
+          "description": "Traffic direction: client-to-server or server-to-client",
+          "log_types": [
+            "threat"
+          ]
+        },
+        {
+          "name": "File Digest",
+          "syslog_key": "filedigest",
+          "gui_filter": null,
+          "description": "SHA-256 hash of the file (WildFire/virus subtypes)",
+          "log_types": [
+            "threat"
+          ]
+        },
+        {
+          "name": "WildFire Verdict",
+          "syslog_key": "cloud",
+          "gui_filter": null,
+          "description": "WildFire cloud verdict (malicious, grayware, phishing, benign)",
+          "log_types": [
+            "threat"
+          ]
+        },
+        {
+          "name": "Filename",
+          "syslog_key": "misc",
+          "gui_filter": "misc",
+          "description": "Filename or URL depending on subtype context",
+          "log_types": [
+            "threat"
+          ]
+        },
+        {
+          "name": "URL Index",
+          "syslog_key": "url_idx",
+          "gui_filter": null,
+          "description": "URL category list index",
+          "log_types": [
+            "threat"
+          ]
+        },
+        {
+          "name": "PCAP ID",
+          "syslog_key": "pcap_id",
+          "gui_filter": null,
+          "description": "Packet capture ID if threat packet capture is enabled",
+          "log_types": [
+            "threat"
+          ]
+        }
+      ],
+      "cloud_container_sdwan": [
+        {
+          "name": "Pod Namespace",
+          "syslog_key": "pod_namespace",
+          "gui_filter": null,
+          "description": "Kubernetes pod namespace (CN-Series)",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "Pod Name",
+          "syslog_key": "pod_name",
+          "gui_filter": null,
+          "description": "Kubernetes pod name",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "Container ID",
+          "syslog_key": "container_id",
+          "gui_filter": null,
+          "description": "Container identifier",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        },
+        {
+          "name": "Device Group Hierarchy",
+          "syslog_key": "dg_hier_level_1",
+          "gui_filter": null,
+          "description": "Panorama device group hierarchy levels (1-4)",
+          "log_types": [
+            "traffic",
+            "threat"
+          ]
+        }
+      ],
+      "configuration_log_fields": [
+        {
+          "name": "Admin",
+          "syslog_key": "admin",
+          "gui_filter": "admin",
+          "description": "Administrator username who made the change"
+        },
+        {
+          "name": "Client",
+          "syslog_key": "client",
+          "gui_filter": "client",
+          "description": "Client type: Web, CLI, Panorama, XML API, REST API"
+        },
+        {
+          "name": "Command",
+          "syslog_key": "cmd",
+          "gui_filter": "cmd",
+          "description": "Command or action performed"
+        },
+        {
+          "name": "Path",
+          "syslog_key": "path",
+          "gui_filter": "path",
+          "description": "Configuration path affected"
+        },
+        {
+          "name": "Before Change",
+          "syslog_key": "before_change_detail",
+          "gui_filter": null,
+          "description": "Configuration value before the change"
+        },
+        {
+          "name": "After Change",
+          "syslog_key": "after_change_detail",
+          "gui_filter": null,
+          "description": "Configuration value after the change"
+        },
+        {
+          "name": "Result",
+          "syslog_key": "result",
+          "gui_filter": "result",
+          "description": "Outcome of the configuration action (Submitted, Succeeded, Failed, Unauthorized)"
+        }
+      ]
+    },
+    "action_values": {
+      "traffic_log": {
+        "allow": "Session permitted by security rule",
+        "deny": "Session blocked; specific application was identified by the rule",
+        "drop": "Session dropped; rule specified 'any' application and blocked before app identification",
+        "reset-client": "Session terminated with TCP RST sent to client",
+        "reset-server": "Session terminated with TCP RST sent to server",
+        "reset-both": "Session terminated with TCP RST sent to both client and server"
+      },
+      "threat_log": {
+        "allow": "Threat detected but session was allowed (alert-only mode)",
+        "alert": "Threat detected, alert generated, session continues",
+        "deny": "Threat detected and session blocked",
+        "drop": "Threat detected and packets dropped silently",
+        "reset-client": "Threat detected; packets dropped, TCP RST sent to client, threat logged",
+        "reset-server": "Threat detected; packets dropped, TCP RST sent to server, threat logged",
+        "reset-both": "Threat detected; packets dropped, TCP RST sent to both, threat logged",
+        "block-ip": "Source or destination IP blocked for a configured duration",
+        "sinkhole": "DNS query redirected to sinkhole IP (Anti-Spyware DNS sinkholing)"
+      }
+    },
+    "session_end_reasons": {
+      "threat": "Session terminated by a threat detection",
+      "policy-deny": "Session denied by security policy",
+      "decrypt-cert-validation": "Decryption certificate validation failure",
+      "decrypt-unsupport-param": "Unsupported decryption parameter",
+      "decrypt-error": "Decryption error",
+      "tcp-rst-from-client": "Client sent TCP RST",
+      "tcp-rst-from-server": "Server sent TCP RST",
+      "resources-unavailable": "System resource exhaustion",
+      "tcp-fin": "Normal TCP session termination",
+      "tcp-reuse": "Session reused by a new TCP connection",
+      "decoder": "Decoder detected an issue",
+      "aged-out": "Session timed out",
+      "unknown": "Unknown reason",
+      "n-a": "Not applicable"
+    },
+    "severity_levels": {
+      "informational": {
+        "numeric": 1,
+        "description": "Normal activity, not a threat"
+      },
+      "low": {
+        "numeric": 2,
+        "description": "Low risk, minimal impact"
+      },
+      "medium": {
+        "numeric": 3,
+        "description": "Moderate risk, potential impact"
+      },
+      "high": {
+        "numeric": 4,
+        "description": "Significant risk, likely impact"
+      },
+      "critical": {
+        "numeric": 5,
+        "description": "Severe risk, immediate attention required"
+      }
+    }
+  },
+  "filter_syntax": {
+    "description": "PAN-OS log filter expressions used in Monitor > Logs (GUI) and CLI 'show log' commands",
+    "operators": {
+      "eq": {
+        "description": "Exact match (equals)",
+        "example": "(action eq allow)",
+        "applies_to": [
+          "string",
+          "number"
+        ]
+      },
+      "neq": {
+        "description": "Not equal to",
+        "example": "(action neq deny)",
+        "applies_to": [
+          "string",
+          "number"
+        ]
+      },
+      "in": {
+        "description": "IP/subnet membership or set membership",
+        "example": "(addr.src in 192.168.10.0/24)",
+        "applies_to": [
+          "ip_address"
+        ]
+      },
+      "contains": {
+        "description": "Substring search",
+        "example": "(url contains vpn)",
+        "applies_to": [
+          "string"
+        ]
+      },
+      "geq": {
+        "description": "Greater than or equal to",
+        "example": "(receive_time geq '2025/01/01 00:00:00')",
+        "applies_to": [
+          "number",
+          "datetime"
+        ]
+      },
+      "leq": {
+        "description": "Less than or equal to",
+        "example": "(port.src leq 1024)",
+        "applies_to": [
+          "number",
+          "datetime"
+        ]
+      },
+      "and": {
+        "description": "Logical AND",
+        "example": "(action eq allow) and (zone.dst eq UNTRUST)",
+        "applies_to": [
+          "logical"
+        ]
+      },
+      "or": {
+        "description": "Logical OR",
+        "example": "(port.dst eq 80) or (port.dst eq 443)",
+        "applies_to": [
+          "logical"
+        ]
+      },
+      "!": {
+        "description": "Negate an expression",
+        "example": "!(subtype eq virus)",
+        "applies_to": [
+          "logical"
+        ]
+      }
+    },
+    "gui_filter_fields": [
+      {
+        "field": "addr.src",
+        "description": "Source IP address"
+      },
+      {
+        "field": "addr.dst",
+        "description": "Destination IP address"
+      },
+      {
+        "field": "port.src",
+        "description": "Source port"
+      },
+      {
+        "field": "port.dst",
+        "description": "Destination port"
+      },
+      {
+        "field": "zone.src",
+        "description": "Source security zone"
+      },
+      {
+        "field": "zone.dst",
+        "description": "Destination security zone"
+      },
+      {
+        "field": "rule",
+        "description": "Security rule name"
+      },
+      {
+        "field": "user.src",
+        "description": "Source username"
+      },
+      {
+        "field": "user.dst",
+        "description": "Destination username"
+      },
+      {
+        "field": "app",
+        "description": "Application identifier"
+      },
+      {
+        "field": "category",
+        "description": "URL category"
+      },
+      {
+        "field": "action",
+        "description": "Action taken"
+      },
+      {
+        "field": "subtype",
+        "description": "Threat subtype"
+      },
+      {
+        "field": "severity",
+        "description": "Threat severity"
+      },
+      {
+        "field": "receive_time",
+        "description": "Log receive timestamp (format: yyyy/mm/dd hh:mm:ss)"
+      },
+      {
+        "field": "misc",
+        "description": "Additional details (URL, filename)"
+      },
+      {
+        "field": "threatid",
+        "description": "Threat signature ID"
+      },
+      {
+        "field": "sessionid",
+        "description": "Session identifier"
+      },
+      {
+        "field": "serial",
+        "description": "Firewall serial number"
+      },
+      {
+        "field": "vsys",
+        "description": "Virtual system"
+      }
+    ],
+    "example_filters": {
+      "all_denied_traffic": "(action eq deny)",
+      "allowed_traffic_specific_ips_port80": "(addr.src in 11.10.21.21) and (addr.dst in 20.20.20.56) and (port.dst eq 80) and (action eq allow)",
+      "traffic_for_specific_rule": "(rule eq 'Rule name')",
+      "denied_from_source_ip": "(addr.src in 123.24.10.23) and (action eq deny)",
+      "url_malware_ssl_or_443": "(subtype eq url) and (category eq malware) and ((app eq ssl) or (port.dst eq 443))",
+      "non_virus_threats_with_doc_files": "!(subtype eq virus) and ((misc contains .doc) or (misc contains .docx))",
+      "time_range_filter": "(receive_time geq '2025/01/15 08:00:00') and (receive_time leq '2025/01/15 17:00:00')",
+      "zone_based_with_subnet": "(zone.src eq OUTSIDE) and (addr.src in 10.10.10.0/24) and (addr.dst in 20.20.20.21) and (zone.dst eq PROTECT)",
+      "high_critical_allowed_threats": "(severity eq high) or (severity eq critical) and (action eq allow)",
+      "specific_threat_id": "(threatid eq 52033)",
+      "c2_spyware_detections": "(subtype eq spyware) and (severity eq critical) and (action eq allow)"
+    },
+    "cli_query_syntax": {
+      "command_format": "show log <log_type> [direction <direction>] [query equal \"<filter>\"] [start-time equal <time>] [end-time equal <time>]",
+      "examples": [
+        "show log traffic query equal \"(port.dst eq 443) and (action eq allow)\"",
+        "show log threat query equal \"(subtype eq spyware) and (severity eq critical)\"",
+        "show log traffic start-time equal 2025/01/15@08:00:00 end-time equal 2025/01/15@17:00:00 query equal \"(action eq deny)\""
+      ]
+    }
+  },
+  "security_profiles": {
+    "overview": "Security Profiles are the primary inline detection and prevention mechanism attached to security rules. Best practice: all 'allow' rules should have at least a baseline Security Profile Group attached.",
+    "profile_types": {
+      "antivirus": {
+        "description": "Detects known malware in protocol streams",
+        "supported_protocols": [
+          "HTTP",
+          "HTTPS (with decryption)",
+          "SMTP",
+          "IMAP",
+          "POP3",
+          "FTP",
+          "SMB"
+        ],
+        "actions": [
+          "allow",
+          "alert",
+          "drop",
+          "reset-client",
+          "reset-server",
+          "reset-both"
+        ],
+        "best_practice": "Use aggressive blocking actions (reset-both) for all allowed outbound and inbound web and email traffic",
+        "generates_log_subtype": [
+          "virus",
+          "wildfire-virus"
+        ]
+      },
+      "anti_spyware": {
+        "description": "Detects spyware, C2 callbacks, phone-home traffic, and DNS-based threats",
+        "actions": [
+          "allow",
+          "alert",
+          "drop",
+          "reset-client",
+          "reset-server",
+          "reset-both",
+          "block-ip",
+          "sinkhole"
+        ],
+        "features": {
+          "dns_sinkholing": "Redirects DNS queries for known malicious domains to a sinkhole IP address",
+          "dns_signatures": {
+            "content_signatures": "Downloaded with threat prevention dynamic updates",
+            "dns_security_cloud": "Dynamic cloud lookups via DNS Security subscription"
+          },
+          "passive_dns_monitoring": "Monitor DNS traffic without blocking"
+        },
+        "best_practice": "Use strict actions for medium/high/critical severity. Enable DNS sinkholing for malicious domains. Set separate rules for DNS Security content signatures and cloud database.",
+        "generates_log_subtype": [
+          "spyware"
+        ]
+      },
+      "vulnerability_protection": {
+        "description": "Detects exploit attempts matching vulnerability signatures",
+        "actions": [
+          "allow",
+          "alert",
+          "drop",
+          "reset-client",
+          "reset-server",
+          "reset-both",
+          "block-ip"
+        ],
+        "best_practice": "Block high/critical, alert on medium. New signatures may ship with 'alert' default. Use severity-based rules to override defaults.",
+        "generates_log_subtype": [
+          "vulnerability"
+        ],
+        "notes": "Palo Alto observes new signature behavior before escalating default actions from alert to blocking. Override with severity-based rules."
+      },
+      "url_filtering": {
+        "description": "Category-based web access control and credential submission control",
+        "actions": [
+          "allow",
+          "alert",
+          "block",
+          "continue",
+          "override"
+        ],
+        "features": {
+          "credential_detection": "Detect and control submission of corporate credentials to websites",
+          "safe_search": "Enforce safe search for search engines",
+          "inline_categorization": "Real-time URL categorization for uncategorized sites"
+        },
+        "best_practice": "Block known malicious categories (malware, phishing, command-and-control). Alert on high-risk categories. Enable credential phishing protection.",
+        "generates_log_subtype": [
+          "url"
+        ]
+      },
+      "file_blocking": {
+        "description": "Controls file type transfers by direction and application",
+        "actions": [
+          "alert",
+          "block",
+          "continue"
+        ],
+        "best_practice": "Block high-risk file types (PE, DLL, EXE, SCR, BAT, PS1, VBS, HTA, JAR) on inbound. Alert on others for visibility."
+      },
+      "wildfire_analysis": {
+        "description": "Routes files to WildFire sandbox for dynamic analysis",
+        "verdicts": [
+          "malicious",
+          "grayware",
+          "phishing",
+          "benign"
+        ],
+        "best_practice": "Forward all supported file types for analysis. Configure WildFire update schedule for fastest signature delivery.",
+        "generates_log_subtype": [
+          "wildfire"
+        ]
+      },
+      "data_filtering": {
+        "description": "Detects sensitive data patterns (SSN, credit card, custom regex) and controls file types",
+        "actions": [
+          "alert",
+          "block",
+          "reset-client",
+          "reset-server",
+          "reset-both"
+        ],
+        "generates_log_subtype": [
+          "data"
+        ]
+      },
+      "dns_security": {
+        "description": "Add-on subscription for blocking malicious domains and DNS threat detection",
+        "actions": [
+          "allow",
+          "alert",
+          "block",
+          "sinkhole"
+        ],
+        "categories": [
+          "malware",
+          "phishing",
+          "command-and-control",
+          "dynamic-dns",
+          "newly-registered-domains",
+          "grayware"
+        ],
+        "notes": "Requires DNS Security subscription. DNS Security logging must be enabled."
+      }
+    }
+  },
+  "automated_correlation_engine": {
+    "description": "Analyzes logs for multi-event patterns and generates correlated events indicating likely compromise or advanced threats",
+    "license_required": "Threat Prevention",
+    "delivery_method": "Correlation objects delivered with weekly dynamic updates",
+    "correlation_object_id_series": "6000",
+    "correlation_object_structure": {
+      "components": [
+        "patterns (boolean condition structures)",
+        "data_sources",
+        "time_window",
+        "match_count_threshold",
+        "severity_rating"
+      ],
+      "data_sources": [
+        "application_statistics",
+        "traffic",
+        "traffic_summary",
+        "threat_summary",
+        "threat",
+        "data_filtering",
+        "url_filtering"
+      ]
+    },
+    "built_in_detection_categories": [
+      "Suspicious IP activity",
+      "Known command-and-control patterns",
+      "Known vulnerability exploit patterns",
+      "Botnet activity",
+      "WildFire cloud analysis correlated with on-network behavior",
+      "Multi-stage attack patterns",
+      "Compromised host indicators"
+    ],
+    "benefits": [
+      "Case-style alerts for likely host compromise",
+      "Reduced noise vs. raw signature alerts",
+      "No external SIEM required \u2014 runs on PAN-OS/Panorama",
+      "Automatically updated with new correlation objects via dynamic updates"
+    ],
+    "panorama_location": "Monitor > Automated Correlation Engine > Correlation Objects / Correlated Events"
+  },
+  "detection_patterns": {
+    "description": "Reusable detection rule patterns for PAN-OS log analysis",
+    "c2_detection": {
+      "name": "Command and Control Activity",
+      "description": "Detect C2 beaconing, callbacks, and DNS-based C2 channels",
+      "mitre_attack": {
+        "tactic": "Command and Control",
+        "technique_ids": [
+          "T1071",
+          "T1071.001",
+          "T1071.004",
+          "T1568",
+          "T1573"
+        ]
+      },
+      "log_sources": [
+        "threat (subtype: spyware, url)"
+      ],
+      "key_fields": [
+        "subtype",
+        "threatid",
+        "severity",
+        "thr_category",
+        "action",
+        "app",
+        "category"
+      ],
+      "filter_logic": {
+        "panos": "(subtype eq spyware) and (thr_category eq command-and-control) and (action eq allow)",
+        "high_priority_condition": "severity is high or critical AND action is allow"
+      }
+    },
+    "exploit_detection": {
+      "name": "Vulnerability Exploit Attempts",
+      "description": "Detect exploit attempts against known vulnerabilities, especially on external-facing assets",
+      "mitre_attack": {
+        "tactic": "Initial Access",
+        "technique_ids": [
+          "T1190",
+          "T1210"
+        ]
+      },
+      "log_sources": [
+        "threat (subtype: vulnerability)"
+      ],
+      "key_fields": [
+        "subtype",
+        "threatid",
+        "severity",
+        "action",
+        "dst",
+        "dport"
+      ],
+      "filter_logic": {
+        "panos": "(subtype eq vulnerability) and ((severity eq high) or (severity eq critical))",
+        "high_priority_condition": "action is allow AND destination is in external-facing asset group"
+      }
+    },
+    "malware_phishing_web": {
+      "name": "Malware or Phishing Web Traffic",
+      "description": "Detect access to malware or phishing URLs, especially when allowed",
+      "mitre_attack": {
+        "tactic": "Initial Access",
+        "technique_ids": [
+          "T1566.002",
+          "T1189"
+        ]
+      },
+      "log_sources": [
+        "threat (subtype: url, virus, wildfire)"
+      ],
+      "key_fields": [
+        "subtype",
+        "category",
+        "severity",
+        "action",
+        "url",
+        "app"
+      ],
+      "filter_logic": {
+        "panos": "(subtype eq url) and ((category eq malware) or (category eq phishing)) and (action eq allow)",
+        "high_priority_condition": "action is allow"
+      }
+    },
+    "data_exfiltration": {
+      "name": "Data Exfiltration Pattern",
+      "description": "Detect potential data exfiltration via large outbound transfers from sensitive zones to untrusted destinations",
+      "mitre_attack": {
+        "tactic": "Exfiltration",
+        "technique_ids": [
+          "T1041",
+          "T1048",
+          "T1567"
+        ]
+      },
+      "log_sources": [
+        "traffic",
+        "threat (subtype: url, data)"
+      ],
+      "key_fields": [
+        "src",
+        "dst",
+        "bytes_sent",
+        "elapsed",
+        "src_dag",
+        "zone.src",
+        "zone.dst",
+        "category",
+        "app"
+      ],
+      "filter_logic": {
+        "traffic_scope": "src_dag matches high-value asset group AND zone.dst is untrusted AND bytes_sent is large AND elapsed is long",
+        "correlation": "Correlate with URL category or threat category for suspicious/uncategorized destinations"
+      }
+    },
+    "suspicious_admin_activity": {
+      "name": "Suspicious Administrative Activity",
+      "description": "Detect unauthorized or anomalous configuration changes",
+      "mitre_attack": {
+        "tactic": "Defense Evasion",
+        "technique_ids": [
+          "T1562",
+          "T1562.001",
+          "T1562.004"
+        ]
+      },
+      "log_sources": [
+        "configuration",
+        "traffic"
+      ],
+      "key_fields": [
+        "admin",
+        "client",
+        "cmd",
+        "path",
+        "result",
+        "receive_time"
+      ],
+      "filter_logic": {
+        "config_scope": "Changes by privileged accounts outside standard maintenance windows",
+        "correlation": "Same user/IP connecting to management interfaces with unusual applications or destinations"
+      }
+    },
+    "repeated_threat_detections": {
+      "name": "Repeated Medium+ Threat Detections from Same Host",
+      "description": "Detect hosts generating repeated medium or higher severity threat alerts, indicating possible compromise",
+      "mitre_attack": {
+        "tactic": "Multiple",
+        "technique_ids": [
+          "T1071",
+          "T1059",
+          "T1190"
+        ]
+      },
+      "log_sources": [
+        "threat (subtype: spyware, vulnerability)"
+      ],
+      "key_fields": [
+        "subtype",
+        "severity",
+        "action",
+        "src"
+      ],
+      "filter_logic": {
+        "panos": "((subtype eq spyware) or (subtype eq vulnerability)) and ((severity eq medium) or (severity eq high) or (severity eq critical)) and (action eq allow)",
+        "siem_aggregation": "count(*) by src over 1 hour > threshold"
+      }
+    },
+    "high_risk_url_from_critical_zones": {
+      "name": "High-Risk URL Categories Allowed from Critical Zones",
+      "description": "Detect allowed access to malicious URL categories from trusted/sensitive zones",
+      "mitre_attack": {
+        "tactic": "Command and Control",
+        "technique_ids": [
+          "T1071.001",
+          "T1102"
+        ]
+      },
+      "log_sources": [
+        "threat (subtype: url)"
+      ],
+      "key_fields": [
+        "subtype",
+        "category",
+        "action",
+        "zone.src",
+        "zone.dst",
+        "app"
+      ],
+      "filter_logic": {
+        "panos": "(subtype eq url) and (category eq malware) and ((app eq ssl) or (port.dst eq 443)) and (zone.src eq TRUST) and (zone.dst eq UNTRUST) and (action eq allow)"
+      }
+    },
+    "shadow_or_risky_rules": {
+      "name": "Shadow or Overly Broad Rules",
+      "description": "Identify rules that are fully shadowed by earlier rules or are overly permissive (any/any)",
+      "mitre_attack": {
+        "tactic": "Defense Evasion",
+        "technique_ids": [
+          "T1562.004"
+        ]
+      },
+      "log_sources": [
+        "configuration",
+        "traffic"
+      ],
+      "detection_method": "Configuration analysis comparing rule order, source/destination/application scope. Optionally create SIEM rules to flag traffic hitting known broad rules."
+    },
+    "dns_tunneling": {
+      "name": "DNS Tunneling or Abuse",
+      "description": "Detect DNS-based data exfiltration or C2 tunneling",
+      "mitre_attack": {
+        "tactic": "Command and Control",
+        "technique_ids": [
+          "T1071.004",
+          "T1048.001"
+        ]
+      },
+      "log_sources": [
+        "threat (subtype: spyware)",
+        "traffic"
+      ],
+      "key_fields": [
+        "app",
+        "dport",
+        "bytes_sent",
+        "bytes_received",
+        "threatid",
+        "misc"
+      ],
+      "filter_logic": {
+        "panos": "(app eq dns) and (subtype eq spyware)",
+        "anomaly_indicators": "High query volume, long query names, high bytes_sent relative to bytes_received for DNS"
+      }
+    },
+    "credential_phishing": {
+      "name": "Credential Phishing Submission",
+      "description": "Detect corporate credential submission to unauthorized or suspicious websites",
+      "mitre_attack": {
+        "tactic": "Credential Access",
+        "technique_ids": [
+          "T1556",
+          "T1110"
+        ]
+      },
+      "log_sources": [
+        "threat (subtype: url)"
+      ],
+      "key_fields": [
+        "category",
+        "action",
+        "user.src",
+        "misc"
+      ],
+      "detection_method": "URL Filtering credential submission detection. Alert when credentials are submitted to non-whitelisted domains."
+    }
+  },
+  "siem_field_mapping_templates": {
+    "description": "Templates for mapping PAN-OS fields to common SIEM schemas. Populate the siem_field values based on your specific SIEM configuration.",
+    "mapping_template": [
+      {
+        "panos_syslog_field": "src",
+        "description": "Source IP",
+        "sentinel_commonSecurityLog": "SourceIP",
+        "splunk_cim": "src_ip",
+        "elastic_ecs": "source.ip",
+        "chronicle_udm": "principal.ip",
+        "cortex_xql": "action_local_ip"
+      },
+      {
+        "panos_syslog_field": "dst",
+        "description": "Destination IP",
+        "sentinel_commonSecurityLog": "DestinationIP",
+        "splunk_cim": "dest_ip",
+        "elastic_ecs": "destination.ip",
+        "chronicle_udm": "target.ip",
+        "cortex_xql": "action_remote_ip"
+      },
+      {
+        "panos_syslog_field": "sport",
+        "description": "Source Port",
+        "sentinel_commonSecurityLog": "SourcePort",
+        "splunk_cim": "src_port",
+        "elastic_ecs": "source.port",
+        "chronicle_udm": "principal.port",
+        "cortex_xql": "action_local_port"
+      },
+      {
+        "panos_syslog_field": "dport",
+        "description": "Destination Port",
+        "sentinel_commonSecurityLog": "DestinationPort",
+        "splunk_cim": "dest_port",
+        "elastic_ecs": "destination.port",
+        "chronicle_udm": "target.port",
+        "cortex_xql": "action_remote_port"
+      },
+      {
+        "panos_syslog_field": "srcuser",
+        "description": "Source User",
+        "sentinel_commonSecurityLog": "SourceUserName",
+        "splunk_cim": "src_user",
+        "elastic_ecs": "source.user.name",
+        "chronicle_udm": "principal.user.userid",
+        "cortex_xql": "actor_effective_username"
+      },
+      {
+        "panos_syslog_field": "app",
+        "description": "Application",
+        "sentinel_commonSecurityLog": "ApplicationProtocol",
+        "splunk_cim": "app",
+        "elastic_ecs": "network.application",
+        "chronicle_udm": "network.application_protocol",
+        "cortex_xql": "action_app_id_transitions"
+      },
+      {
+        "panos_syslog_field": "action",
+        "description": "Action",
+        "sentinel_commonSecurityLog": "DeviceAction",
+        "splunk_cim": "action",
+        "elastic_ecs": "event.action",
+        "chronicle_udm": "security_result.action",
+        "cortex_xql": "action_type"
+      },
+      {
+        "panos_syslog_field": "rule",
+        "description": "Rule Name",
+        "sentinel_commonSecurityLog": "DeviceCustomString1",
+        "splunk_cim": "rule",
+        "elastic_ecs": "rule.name",
+        "chronicle_udm": "security_result.rule_name",
+        "cortex_xql": "action_pretty"
+      },
+      {
+        "panos_syslog_field": "from",
+        "description": "Source Zone",
+        "sentinel_commonSecurityLog": "DeviceCustomString4",
+        "splunk_cim": "src_zone",
+        "elastic_ecs": "observer.ingress.zone",
+        "chronicle_udm": "security_result.detection_fields",
+        "cortex_xql": "action_source_zone"
+      },
+      {
+        "panos_syslog_field": "to",
+        "description": "Destination Zone",
+        "sentinel_commonSecurityLog": "DeviceCustomString5",
+        "splunk_cim": "dest_zone",
+        "elastic_ecs": "observer.egress.zone",
+        "chronicle_udm": "security_result.detection_fields",
+        "cortex_xql": "action_destination_zone"
+      },
+      {
+        "panos_syslog_field": "proto",
+        "description": "Protocol",
+        "sentinel_commonSecurityLog": "Protocol",
+        "splunk_cim": "protocol",
+        "elastic_ecs": "network.transport",
+        "chronicle_udm": "network.ip_protocol",
+        "cortex_xql": "action_network_protocol"
+      },
+      {
+        "panos_syslog_field": "bytes_sent",
+        "description": "Bytes Sent",
+        "sentinel_commonSecurityLog": "SentBytes",
+        "splunk_cim": "bytes_out",
+        "elastic_ecs": "source.bytes",
+        "chronicle_udm": "network.sent_bytes",
+        "cortex_xql": "action_total_upload"
+      },
+      {
+        "panos_syslog_field": "bytes_received",
+        "description": "Bytes Received",
+        "sentinel_commonSecurityLog": "ReceivedBytes",
+        "splunk_cim": "bytes_in",
+        "elastic_ecs": "destination.bytes",
+        "chronicle_udm": "network.received_bytes",
+        "cortex_xql": "action_total_download"
+      },
+      {
+        "panos_syslog_field": "sessionid",
+        "description": "Session ID",
+        "sentinel_commonSecurityLog": "ExtID",
+        "splunk_cim": "session_id",
+        "elastic_ecs": "network.session_id",
+        "chronicle_udm": "network.session_id",
+        "cortex_xql": "action_external_session_id"
+      },
+      {
+        "panos_syslog_field": "severity",
+        "description": "Severity",
+        "sentinel_commonSecurityLog": "LogSeverity",
+        "splunk_cim": "severity",
+        "elastic_ecs": "event.severity",
+        "chronicle_udm": "security_result.severity",
+        "cortex_xql": "action_log_severity"
+      },
+      {
+        "panos_syslog_field": "threatid",
+        "description": "Threat ID",
+        "sentinel_commonSecurityLog": "DeviceCustomString2",
+        "splunk_cim": "signature_id",
+        "elastic_ecs": "rule.id",
+        "chronicle_udm": "security_result.threat_id",
+        "cortex_xql": "action_external_threat_id"
+      },
+      {
+        "panos_syslog_field": "subtype",
+        "description": "Log Subtype",
+        "sentinel_commonSecurityLog": "DeviceEventClassID",
+        "splunk_cim": "signature_type",
+        "elastic_ecs": "event.category",
+        "chronicle_udm": "metadata.event_type",
+        "cortex_xql": "action_sub_type"
+      },
+      {
+        "panos_syslog_field": "category",
+        "description": "URL Category",
+        "sentinel_commonSecurityLog": "DeviceCustomString6",
+        "splunk_cim": "url_category",
+        "elastic_ecs": "url.category",
+        "chronicle_udm": "security_result.category_details",
+        "cortex_xql": "action_url_category"
+      },
+      {
+        "panos_syslog_field": "misc",
+        "description": "URL/Filename",
+        "sentinel_commonSecurityLog": "RequestURL",
+        "splunk_cim": "url",
+        "elastic_ecs": "url.original",
+        "chronicle_udm": "target.url",
+        "cortex_xql": "action_file_name"
+      },
+      {
+        "panos_syslog_field": "filedigest",
+        "description": "File Hash (SHA-256)",
+        "sentinel_commonSecurityLog": "FileHash",
+        "splunk_cim": "file_hash",
+        "elastic_ecs": "file.hash.sha256",
+        "chronicle_udm": "target.file.sha256",
+        "cortex_xql": "action_file_sha256"
+      }
+    ],
+    "notes": [
+      "Sentinel CommonSecurityLog mappings assume CEF format ingestion via the Palo Alto Networks connector.",
+      "Splunk CIM mappings assume the Palo Alto Networks Add-on for Splunk (TA-paloalto) is installed.",
+      "ECS mappings follow Elastic Common Schema v8.x conventions.",
+      "Chronicle UDM mappings follow the Google SecOps PAN-OS parser.",
+      "Cortex XDR/XSIAM field names may vary based on data model version and ingestion method.",
+      "Fields without a direct SIEM equivalent should be preserved as custom/extended attributes."
+    ]
+  },
+  "configuration_hygiene": {
+    "description": "Configuration audit checklist for reducing detection blind spots",
+    "checks": [
+      {
+        "check": "Security Profiles on all allow rules",
+        "description": "Every security rule with action 'allow' should have a Security Profile Group attached (at minimum: AV, Anti-Spyware, Vulnerability Protection, URL Filtering, WildFire Analysis)",
+        "risk_if_missing": "Traffic passes without inline threat inspection, creating blind spots"
+      },
+      {
+        "check": "No overly broad any/any rules",
+        "description": "Rules with source=any, destination=any, application=any, service=any should be eliminated or scoped",
+        "risk_if_missing": "Overly permissive access bypassing application-aware controls"
+      },
+      {
+        "check": "Shadow rule detection",
+        "description": "Rules fully overlapped by earlier rules in the rulebase that never match traffic",
+        "risk_if_missing": "Wasted policy space; may indicate misconfiguration or stale rules"
+      },
+      {
+        "check": "Logging enabled on all rules",
+        "description": "Session logging (at least at session end) should be enabled on all security rules",
+        "risk_if_missing": "Traffic flows without generating logs, creating visibility gaps"
+      },
+      {
+        "check": "Log forwarding profile assigned",
+        "description": "All rules should have a log forwarding profile sending logs to SIEM/Panorama/Strata Logging Service",
+        "risk_if_missing": "Logs generated but not forwarded for external analysis"
+      },
+      {
+        "check": "DNS sinkholing configured",
+        "description": "Anti-Spyware profile should have DNS sinkholing enabled with a dedicated sinkhole IP",
+        "risk_if_missing": "DNS-based C2 and malware domains not redirected; harder to identify compromised hosts"
+      },
+      {
+        "check": "Decryption policy in place",
+        "description": "SSL/TLS decryption should be enabled for outbound traffic to allow Security Profiles to inspect encrypted content",
+        "risk_if_missing": "Threats in encrypted traffic bypass all Security Profile inspection"
+      },
+      {
+        "check": "Unused objects cleanup",
+        "description": "Remove unused address objects, service objects, and address groups to reduce complexity",
+        "risk_if_missing": "Policy bloat, increased audit difficulty"
+      },
+      {
+        "check": "Dynamic update schedule",
+        "description": "Applications & Threats, Antivirus, and WildFire signatures should update on frequent schedules",
+        "risk_if_missing": "New threat signatures not applied promptly"
+      }
+    ]
+  },
+  "references": {
+    "official_documentation": [
+      {
+        "title": "PAN-OS Admin Guide: Log Types and Severity Levels",
+        "url": "https://docs.paloaltonetworks.com/pan-os/11-2/pan-os-admin/monitoring/view-and-manage-logs/log-types-and-severity-levels"
+      },
+      {
+        "title": "Traffic Log Fields (Syslog Field Descriptions)",
+        "url": "https://docs.paloaltonetworks.com/pan-os/11-2/pan-os-admin/monitoring/use-syslog-for-monitoring/syslog-field-descriptions/traffic-log-fields"
+      },
+      {
+        "title": "Threat Log Fields (Syslog Field Descriptions)",
+        "url": "https://docs.paloaltonetworks.com/pan-os/11-2/pan-os-admin/monitoring/use-syslog-for-monitoring/syslog-field-descriptions/threat-log-fields"
+      },
+      {
+        "title": "Automated Correlation Engine Concepts",
+        "url": "https://docs.paloaltonetworks.com/pan-os/11-2/pan-os-admin/monitoring/use-the-automated-correlation-engine/automated-correlation-engine-concepts"
+      },
+      {
+        "title": "PAN-OS Log Filtering Knowledge Base",
+        "url": "https://knowledgebase.paloaltonetworks.com/KCSArticleDetail?id=kA10g000000ClSlCAK"
+      },
+      {
+        "title": "Tune or Reduce Firewall Logs (Splunk)",
+        "url": "https://pan.dev/splunk/docs/tune-or-reduce-firewall-logs/"
+      },
+      {
+        "title": "Google Chronicle PAN-OS Log Collection",
+        "url": "https://docs.cloud.google.com/chronicle/docs/ingestion/default-parsers/pan-firewall"
+      },
+      {
+        "title": "Security Profile Actions Reference",
+        "url": "https://docs.paloaltonetworks.com/pan-os/11-2/pan-os-web-interface-help/objects/objects-security-profiles/actions-in-security-profiles"
+      }
+    ]
+  }
+}

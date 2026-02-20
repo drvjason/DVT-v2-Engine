@@ -1,0 +1,1090 @@
+{
+  "metadata": {
+    "title": "SentinelOne S1QL 2.0 Detection Engineering Knowledge Base",
+    "version": "2.0",
+    "last_updated": "2025",
+    "source_documents": [
+      "S1QL_2_0_Comprehensive_User_Guide.pdf",
+      "SentinelOne public documentation and community research"
+    ],
+    "purpose": "Structured reference for detection engineering, rule development, validation, and optimization on the SentinelOne XDR platform",
+    "schema_version": "1.0",
+    "kb_updated_at": "2025-01-01"
+  },
+  "platform_architecture": {
+    "overview": {
+      "name": "SentinelOne Singularity Platform",
+      "description": "Cloud-native XDR platform powered by patented Storyline technology and behavioral AI. Unifies endpoint, cloud, and identity telemetry under a single agent architecture.",
+      "query_engine": "Singularity Data Lake (built on Scalyr / DataSet engine)",
+      "data_availability": "Always-hot \u2014 no cold-storage retrieval delays. Full retention window always queryable.",
+      "retention_window": {
+        "default": "14 days",
+        "extended": "Up to 365 days depending on license tier"
+      }
+    },
+    "query_execution_surfaces": [
+      {
+        "name": "Deep Visibility (EDR Search Bar)",
+        "description": "Primary manual threat hunting and investigation interface in the Singularity console",
+        "supports_powerquery": true
+      },
+      {
+        "name": "PowerQuery Editor",
+        "description": "Advanced analytical pipeline editor for aggregation, grouping, and statistical operations",
+        "supports_powerquery": true
+      },
+      {
+        "name": "STAR Custom Rules Engine",
+        "description": "Real-time automated detection engine. Evaluates every ingested endpoint event against active rules in near-real time.",
+        "supports_powerquery": false,
+        "note": "STAR rules do NOT retroactively scan historical data. Retrospective hunting must use Deep Visibility search."
+      },
+      {
+        "name": "SentinelOne API",
+        "description": "Programmatic access endpoint for automation and integration",
+        "endpoint": "/web/api/v2.1/dv/init-query",
+        "api_version": "2.1"
+      },
+      {
+        "name": "Purple AI",
+        "description": "Generative AI assistant that translates natural-language questions into valid S1QL 2.0 queries. Enables hunting for analysts unfamiliar with the query syntax.",
+        "example_prompt": "Show me all PowerShell commands from the last 24 hours"
+      }
+    ],
+    "console_views": {
+      "description": "Three primary scoping views available in the Enhanced Deep Visibility console",
+      "views": [
+        {
+          "name": "EDR View",
+          "description": "Focuses on structured security telemetry from SentinelOne agents only. Best for targeted endpoint forensics.",
+          "scope": "SentinelOne agent data"
+        },
+        {
+          "name": "XDR View",
+          "description": "Combines SentinelOne agent data with integrated third-party source data (e.g., cloud, identity, firewall logs).",
+          "scope": "Agent data + third-party integrations"
+        },
+        {
+          "name": "All Data View",
+          "description": "Unified search across all security and environmental log sources ingested into the Singularity Data Lake.",
+          "scope": "All ingested data"
+        }
+      ]
+    },
+    "storyline_technology": {
+      "description": "Patented SentinelOne technology that automatically groups all related process, file, network, and registry events under a single Storyline ID, creating a complete attack narrative without manual correlation.",
+      "field": "src.process.storyline.id",
+      "use_case": "Pivot from any suspicious event to the full attack chain using one search",
+      "example_query": "src.process.storyline.id = '<STORYLINE_ID_HERE>'"
+    }
+  },
+  "search_methods": {
+    "overview": "SentinelOne Deep Visibility offers multiple search paradigms from simple IOC lookups to AI-assisted behavioral analysis.",
+    "methods": [
+      {
+        "name": "IOC Search",
+        "type": "indicator_of_compromise",
+        "description": "Straightforward lookup for specific artifacts. Supports file hashes, IP addresses, domain names, filenames, and any other indexed field value.",
+        "best_for": "Known threat artifacts \u2014 file hashes from threat intel, suspicious IPs, malicious domains",
+        "example": "tgt.file.sha256 = 'abc123def456...'"
+      },
+      {
+        "name": "Storyline Search",
+        "type": "storyline_pivot",
+        "description": "Uses a Storyline ID to instantly retrieve every related process, file, network, and registry event in a single attack chain. Eliminates manual correlation.",
+        "best_for": "Full incident reconstruction after identifying an initial suspicious event",
+        "example": "src.process.storyline.id = '<ID>'"
+      },
+      {
+        "name": "Retrospective Search",
+        "type": "historical_analysis",
+        "description": "Hunts through up to 90 days (or full retention window) of historical telemetry to find evidence of threats that were only recently identified. Supports offline endpoint data.",
+        "best_for": "Identifying past infection or compromise after new IOC discovery",
+        "retention_note": "Default 14\u2013365 days depending on license. STAR rules do NOT perform retroactive matching."
+      },
+      {
+        "name": "MITRE ATT&CK Hunting",
+        "type": "ttp_search",
+        "description": "Search for specific behavioral patterns by MITRE technique ID. A single query returns results across all endpoints regardless of OS (Windows, Linux, macOS).",
+        "best_for": "Fleet-wide TTP hunting by MITRE technique",
+        "fields": [
+          "indicator.name",
+          "indicator.metadata",
+          "indicator.category"
+        ],
+        "example": "indicator.name contains 'injection'"
+      },
+      {
+        "name": "Watchlist (Scheduled Search)",
+        "type": "proactive_monitoring",
+        "description": "Save a Deep Visibility query to run on a recurring schedule (hourly, daily, weekly). Alerts analysts when new matches occur without requiring active hunting.",
+        "best_for": "Continuous monitoring, turning reactive hunting into proactive detection",
+        "schedules": [
+          "hourly",
+          "daily",
+          "weekly"
+        ]
+      },
+      {
+        "name": "S1QL Manual Hunt",
+        "type": "manual_query",
+        "description": "User-authored queries using S1QL 2.0 syntax. Console provides a command palette with auto-completion and syntax validation.",
+        "best_for": "Custom threat hunting, investigation, ad-hoc analysis"
+      },
+      {
+        "name": "PowerQuery",
+        "type": "advanced_analytics",
+        "description": "Pipeline-based advanced query tool for complex aggregation, statistical analysis, and cross-dataset correlation. Extends S1QL with pipe-delimited transformation stages.",
+        "best_for": "Anomaly detection, behavioral baselining, statistical reporting, frequency-of-occurrence analysis"
+      },
+      {
+        "name": "Purple AI",
+        "type": "ai_assisted",
+        "description": "Natural language interface that translates plain-English questions into S1QL 2.0 syntax. Lowers the barrier to entry for analysts unfamiliar with the query language.",
+        "best_for": "Rapid query drafting, onboarding new analysts, exploratory investigation",
+        "guidance": "Always review and validate Purple AI generated queries before saving as STAR rules or running over extended time windows"
+      }
+    ]
+  },
+  "s1ql_syntax": {
+    "version": "2.0",
+    "schema_type": "dot_notation",
+    "overview": "S1QL 2.0 uses hierarchical dot-notation field names. Queries consist of filter clauses implicitly joined by AND. PowerQuery extends filters with pipe-delimited analytics stages.",
+    "basic_structure": {
+      "description": "Clauses placed side-by-side are implicitly ANDed. No connector keyword required for AND logic.",
+      "example": "event.type = 'Process Creation' src.process.name = 'powershell.exe'",
+      "notes": [
+        "Boolean keywords and, or, not are case-sensitive lowercase",
+        "OR conditions MUST be wrapped in parentheses",
+        "Field names and string values are case-sensitive unless using case-insensitive operators",
+        "Single quotes are required around string values",
+        "Comments are NOT supported in the XDR console (use an external IDE for documentation)"
+      ]
+    },
+    "boolean_logic": {
+      "implicit_and": {
+        "description": "Clauses separated by a space are ANDed",
+        "example": "event.type = 'Process Creation' src.process.name = 'cmd.exe'"
+      },
+      "explicit_and": {
+        "keyword": "and",
+        "example": "event.type = 'Process Creation' and src.process.name = 'cmd.exe'"
+      },
+      "explicit_or": {
+        "keyword": "or",
+        "constraint": "OR conditions must be enclosed in parentheses",
+        "example": "event.type = 'Process Creation' and (src.process.name = 'cmd.exe' or src.process.name = 'powershell.exe')"
+      },
+      "explicit_not": {
+        "keyword": "not",
+        "example": "event.type = 'Process Creation' and not (src.process.name = 'svchost.exe')"
+      },
+      "not_equals_shorthand": {
+        "operator": "!=",
+        "equivalent": "and not (field = value)",
+        "example": "src.process.name != 'svchost.exe'"
+      }
+    },
+    "operators": {
+      "equality": {
+        "operator": "=",
+        "description": "Exact match, case-sensitive",
+        "example": "src.process.name = 'cmd.exe'"
+      },
+      "inequality": {
+        "operator": "!=",
+        "description": "Not equal",
+        "example": "src.process.name != 'svchost.exe'"
+      },
+      "contains": {
+        "operator": "contains",
+        "description": "Case-insensitive substring match. Default behavior in S1QL 2.0 (v1 required ContainsCIS explicitly).",
+        "example": "src.process.cmdline contains '-encodedcommand'",
+        "performance_tier": "moderate"
+      },
+      "in": {
+        "operator": "in",
+        "description": "Set membership \u2014 tests if a field matches any value in a provided list",
+        "example": "tgt.file.extension in ('dll', 'exe', 'ps1', 'bat')",
+        "best_for": "IOC lists, file extension sets, multiple event types",
+        "performance_tier": "fast"
+      },
+      "matches": {
+        "operator": "matches",
+        "description": "PCRE-style full regular expression match. Supports lookahead/lookbehind but impacts performance.",
+        "quote_style": "double or single quotes accepted",
+        "example": "src.process.cmdline matches \".*(encodedcommand|frombase64).*\"",
+        "performance_tier": "slowest",
+        "guidance": "Prefer contains or in when regex is not strictly required"
+      },
+      "greater_than": {
+        "operator": ">",
+        "example": "dst.port.number > 1024"
+      },
+      "less_than": {
+        "operator": "<",
+        "example": "dst.port.number < 65535"
+      },
+      "greater_than_or_equal": {
+        "operator": ">="
+      },
+      "less_than_or_equal": {
+        "operator": "<="
+      },
+      "wildcard_all_fields": {
+        "operator": "* contains",
+        "description": "Searches across ALL indexed text fields. Useful for broad IOC sweeps.",
+        "example": "* contains 'mimikatz'",
+        "performance_tier": "slowest",
+        "guidance": "Replace with specific field targets wherever possible for better performance"
+      }
+    }
+  },
+  "data_model": {
+    "schema_notation": "dot-notation hierarchical namespaces",
+    "namespaces": {
+      "src_process": {
+        "prefix": "src.process",
+        "description": "Source (parent) process",
+        "fields": {
+          "src.process.name": "Source process name",
+          "src.process.cmdline": "Source process command line string",
+          "src.process.pid": "Source process ID",
+          "src.process.image.path": "Full disk path of source process binary",
+          "src.process.image.sha1": "SHA1 hash of source process binary",
+          "src.process.image.sha256": "SHA256 hash of source process binary",
+          "src.process.user": "User context under which source process runs",
+          "src.process.integrityLevel": "Integrity level: SYSTEM, HIGH, MEDIUM, LOW, UNTRUSTED",
+          "src.process.displayName": "Human-readable display name of source process",
+          "src.process.publisher": "Code-signing publisher of source process",
+          "src.process.verifiedStatus": "Signature verification status (verified / not verified)",
+          "src.process.startTime": "Process start timestamp",
+          "src.process.uniqueKey": "Unique process identifier",
+          "src.process.storyline.id": "Storyline group ID \u2014 pivot to full attack chain",
+          "src.process.netConnCount": "Network connection count for the process"
+        }
+      },
+      "src_process_parent": {
+        "prefix": "src.process.parent",
+        "description": "Grandparent process (parent of source process)",
+        "fields": {
+          "src.process.parent.name": "Grandparent process name",
+          "src.process.parent.cmdline": "Grandparent process command line",
+          "src.process.parent.user": "Grandparent process user context"
+        }
+      },
+      "tgt_process": {
+        "prefix": "tgt.process",
+        "description": "Target (child / spawned) process",
+        "fields": {
+          "tgt.process.name": "Target process name",
+          "tgt.process.cmdline": "Target process command line",
+          "tgt.process.pid": "Target process ID",
+          "tgt.process.image.path": "Full path of target process binary",
+          "tgt.process.image.sha1": "SHA1 hash of target process binary",
+          "tgt.process.image.sha256": "SHA256 hash of target process binary",
+          "tgt.process.displayName": "Display name of target process",
+          "tgt.process.user": "User context of target process"
+        }
+      },
+      "tgt_file": {
+        "prefix": "tgt.file",
+        "description": "Target file object",
+        "fields": {
+          "tgt.file.path": "Full file path",
+          "tgt.file.sha256": "SHA256 hash",
+          "tgt.file.sha1": "SHA1 hash",
+          "tgt.file.md5": "MD5 hash",
+          "tgt.file.extension": "File extension WITHOUT the dot (e.g., 'exe' not '.exe')",
+          "tgt.file.createdAt": "File creation timestamp",
+          "tgt.file.modifiedAt": "File modification timestamp",
+          "tgt.file.isExecutable": "Boolean \u2014 is the file executable",
+          "tgt.file.signer": "Code-signing signer identity",
+          "tgt.file.oldPath": "Previous path (for rename events)"
+        }
+      },
+      "network": {
+        "description": "Network fields",
+        "fields": {
+          "src.ip.address": "Source IP address",
+          "dst.ip.address": "Destination IP address",
+          "src.port.number": "Source port number",
+          "dst.port.number": "Destination port number",
+          "event.network.direction": "INCOMING or OUTGOING",
+          "event.network.connectionStatus": "SUCCESS or FAILURE",
+          "event.dns.request": "DNS query domain name",
+          "event.dns.response": "DNS response value",
+          "event.url.action": "HTTP method (GET, POST, etc.)",
+          "url.address": "Full URL"
+        }
+      },
+      "registry": {
+        "description": "Windows registry fields",
+        "fields": {
+          "registry.path": "Full registry key path",
+          "registry.id": "Registry key unique ID",
+          "registry.value": "Registry value data"
+        }
+      },
+      "scheduled_tasks_services": {
+        "description": "Scheduled task and service fields",
+        "fields": {
+          "task.name": "Scheduled task name",
+          "task.path": "Scheduled task path",
+          "task.serviceName": "Windows service name"
+        }
+      },
+      "indicators": {
+        "description": "Threat indicator and detection fields",
+        "fields": {
+          "indicator.name": "Indicator or detection name (maps to MITRE technique behaviors)",
+          "indicator.metadata": "Indicator metadata string",
+          "indicator.category": "Indicator category"
+        }
+      },
+      "login_auth": {
+        "description": "Login and authentication event fields",
+        "fields": {
+          "event.login.userName": "Username involved in login event",
+          "event.login.loginIsSuccessful": "Boolean \u2014 login success (true) or failure (false)",
+          "event.login.type": "Login type (interactive, network, etc.)",
+          "event.category": "Event category (e.g., 'logins')"
+        }
+      },
+      "event_metadata": {
+        "description": "Event-level metadata",
+        "fields": {
+          "event.type": "Primary event type classifier \u2014 always lead queries with this field",
+          "event.time": "Event timestamp",
+          "event.category": "High-level event category"
+        }
+      },
+      "endpoint": {
+        "description": "Agent and host metadata",
+        "fields": {
+          "endpoint.name": "Hostname of the agent",
+          "endpoint.os": "Operating system: windows, linux, macos",
+          "agent.version": "Agent version string",
+          "site.name": "SentinelOne site name",
+          "site.id": "SentinelOne site ID"
+        }
+      },
+      "user": {
+        "description": "User identity",
+        "fields": {
+          "user.name": "User name associated with the event"
+        }
+      },
+      "os_src_process": {
+        "prefix": "osSrc.process",
+        "description": "OS-level source process \u2014 used in task and service event types",
+        "fields": {
+          "osSrc.process.cmdline": "OS-level source process command line"
+        }
+      }
+    },
+    "event_types": {
+      "description": "Complete list of event.type values. Always place event.type as the FIRST filter clause for best performance.",
+      "process_events": [
+        "Process Creation",
+        "Process Termination"
+      ],
+      "file_events": [
+        "File Creation",
+        "File Modification",
+        "File Deletion",
+        "File Rename",
+        "File Scan"
+      ],
+      "network_events": [
+        "IP Connect",
+        "IP Listen"
+      ],
+      "dns_events": [
+        "DNS Resolved",
+        "DNS Unresolved"
+      ],
+      "registry_events": [
+        "Registry Key Create",
+        "Registry Key Delete",
+        "Registry Value Create",
+        "Registry Value Modified"
+      ],
+      "task_events": [
+        "Task Register",
+        "Task Update",
+        "Task Start",
+        "Task Delete"
+      ],
+      "auth_events": [
+        "Login",
+        "Logout"
+      ],
+      "http_events": [
+        "GET",
+        "POST"
+      ],
+      "pipe_events": [
+        "Named Pipe Creation",
+        "Named Pipe Connection"
+      ]
+    }
+  },
+  "powerquery": {
+    "description": "Pipeline-based analytics extension to S1QL 2.0. Base search executes first, then results flow through pipe-delimited transformation stages.",
+    "syntax_pattern": "<base S1QL filter>\n| <stage 1>\n| <stage 2>\n| ...",
+    "stages": {
+      "group": {
+        "purpose": "Aggregate records \u2014 count, sum, min, max, average, percentile by one or more fields",
+        "syntax": "| group alias = function() by field1, field2",
+        "example": "| group eventcount = count() by src.process.name, endpoint.name",
+        "aggregation_functions": {
+          "count()": "Count of matching records",
+          "count(condition)": "Count of records satisfying a boolean condition",
+          "sum(field)": "Sum of a numeric field",
+          "min(field)": "Minimum value of a field",
+          "max(field)": "Maximum value of a field",
+          "avg(field)": "Average value of a field",
+          "percentile(field, N)": "Nth percentile of a field",
+          "estimate_distinct(field)": "Approximate count of distinct values"
+        },
+        "conditional_count_example": "| group FailedLogins = count(event.login.loginIsSuccessful = false) by event.login.userName, endpoint.name"
+      },
+      "columns": {
+        "purpose": "Select, order, and optionally rename or compute output columns",
+        "syntax": "| columns field1, field2, alias = expression",
+        "ternary_operator": "(condition) ? 'true_value' : 'false_value'",
+        "example": "| columns endpoint.name, score = (value > 130000000) ? 'high' : 'low'"
+      },
+      "sort": {
+        "purpose": "Order results by one or more fields",
+        "syntax": "| sort -field (descending) or | sort field (ascending)",
+        "example": "| sort -eventcount, endpoint.name"
+      },
+      "filter": {
+        "purpose": "Post-aggregation row filtering \u2014 analogous to SQL HAVING clause",
+        "syntax": "| filter condition",
+        "compound_example": "| filter total_requests >= 500 && error_rate > 0.01",
+        "guidance": "Apply filters in the BASE search rather than post-aggregation for better performance"
+      },
+      "let": {
+        "purpose": "Create new computed fields from existing ones",
+        "syntax": "| let new_field = expression",
+        "example": "| let error_percent = errors * 100 / total_requests"
+      },
+      "limit": {
+        "purpose": "Cap the number of output rows",
+        "syntax": "| limit N",
+        "example": "| limit 25",
+        "guidance": "Use | limit 100 during exploratory investigation to avoid pulling unnecessary data volumes"
+      },
+      "parse": {
+        "purpose": "Extract structured fields from unstructured text using regex named capture groups",
+        "syntax": "| parse \"regex with (?P<field_name>capture)\" from source_field",
+        "example": "| parse \"user=(?P<extracted_user>[^ ]+)\" from src.process.cmdline"
+      },
+      "transpose": {
+        "purpose": "Pivot rows into columns \u2014 useful for time-series or cross-tab views",
+        "syntax": "| transpose row row_field column column_field",
+        "example": "| transpose row endpoint.name column event.type"
+      },
+      "join": {
+        "purpose": "Execute two subqueries and merge results on a common key field",
+        "syntax": "| join a = (subquery_a), b = (subquery_b) on shared_key_field",
+        "example": "| join a = (event.type = 'Process Creation' | group count = count() by endpoint.name), b = (event.type = 'IP Connect' | group connections = count() by endpoint.name) on endpoint.name"
+      },
+      "union": {
+        "purpose": "Combine results from multiple subqueries into a single vertical table",
+        "syntax": "| union (subquery1), (subquery2)",
+        "example": "| union (event.type = 'File Creation' tgt.file.extension = 'exe' | group count = count() by endpoint.name), (event.type = 'Process Creation' src.process.name = 'powershell.exe' | group count = count() by endpoint.name)"
+      }
+    }
+  },
+  "star_rules": {
+    "description": "Storyline Active Response (STAR) \u2014 SentinelOne's custom real-time detection engine. Every endpoint event ingested into the Singularity Data Lake is evaluated against all active STAR rules in near-real time.",
+    "how_it_works": {
+      "flow": [
+        "1. Endpoint event is generated and sent to the Singularity Data Lake (SDL)",
+        "2. Event is evaluated against all active STAR rules",
+        "3. If a rule matches, a response command is produced",
+        "4. Agent performs the configured mitigation action (can take up to ~1 minute)",
+        "5. Alert is generated in the console"
+      ],
+      "important_distinction": "STAR is designed for detection and mitigation, NOT real-time blocking. For real-time prevention use hash-based blocklists."
+    },
+    "response_actions": [
+      "Alert only (generate console alert)",
+      "Kill matching process",
+      "Quarantine endpoint network",
+      "Mark as Threat with automatic mitigation policy (suspicious or malicious)"
+    ],
+    "rule_creation_workflow": [
+      "1. Write and validate query in Deep Visibility against a meaningful historical time window",
+      "2. Confirm query returns intended events and review for false positives",
+      "3. Navigate to Sentinels \u2192 STAR Custom Rules \u2192 New Rule",
+      "4. Name and describe the rule (include MITRE ATT&CK technique ID in description)",
+      "5. Set severity: Low, Medium, High, or Critical",
+      "6. Set scope: specific sites, groups, or entire account",
+      "7. Paste validated query into rule condition field",
+      "8. Choose response action",
+      "9. Enable rule in alert-only mode for at least one week before enabling automated response"
+    ],
+    "naming_conventions": {
+      "description": "Prefix rules with category tags for organization and searchability",
+      "examples": [
+        "[Persistence] Suspicious Scheduled Task Registration",
+        "[Lateral] SMB Connection from Non-Standard Process",
+        "[Execution] Encoded PowerShell Command",
+        "[Discovery] Network Recon from Scripting Engine",
+        "[CredAccess] LSASS Memory Access"
+      ]
+    },
+    "constraints_and_limits": {
+      "rule_limit_default": "100 STAR rules (Singularity Complete tier)",
+      "rule_limit_upgradeable": "Upgradeable in packs of 300",
+      "rule_limit_maximum": "1000 STAR rules",
+      "retroactive_matching": false,
+      "retroactive_note": "STAR rules only evaluate events as they are newly ingested. They do NOT scan historical data retroactively. Use Deep Visibility for retrospective analysis.",
+      "real_time_blocking": false,
+      "real_time_blocking_note": "STAR is not intended to block applications in real-time. Response latency can be up to ~1 minute. Use hash-based user-defined blocklists for real-time prevention.",
+      "powerquery_in_star": false,
+      "powerquery_in_star_note": "PowerQuery aggregation pipeline stages (group, sort, join, etc.) are NOT supported in STAR rule conditions. Only base S1QL 2.0 filter syntax is supported."
+    },
+    "yaml_schema_for_version_control": {
+      "description": "Recommended YAML schema for managing STAR rules under version control (Git)",
+      "required_fields": [
+        "title",
+        "description",
+        "author",
+        "date",
+        "operating_system",
+        "query",
+        "status"
+      ],
+      "optional_fields": [
+        "modified",
+        "mitreID",
+        "technique",
+        "tactic",
+        "subtechnique",
+        "false_positives",
+        "tags",
+        "references"
+      ],
+      "status_values": [
+        "experimental",
+        "stable"
+      ],
+      "example": {
+        "title": "Suspicious Scheduled Task from Script Interpreter",
+        "description": "Detects task registration initiated by wscript, cmd, or powershell",
+        "author": "Security Team",
+        "date": "2025-01-15",
+        "modified": "2025-06-10",
+        "mitreID": "T1053.005",
+        "tactic": "Persistence",
+        "technique": "Scheduled Task/Job",
+        "operating_system": "Windows",
+        "query": "event.type = 'Task Register' and (osSrc.process.cmdline contains 'wscript' or osSrc.process.cmdline contains 'cmd' or osSrc.process.cmdline contains 'powershell')",
+        "false_positives": [
+          "Legitimate software installers using scheduled tasks"
+        ],
+        "status": "stable"
+      }
+    }
+  },
+  "performance_optimization": {
+    "rules": [
+      {
+        "priority": 1,
+        "rule": "Narrow the time window first",
+        "description": "The single most impactful optimization. Start with the narrowest time window that covers your investigation and widen only if needed."
+      },
+      {
+        "priority": 2,
+        "rule": "Always lead with event.type",
+        "description": "event.type is the most selective indexed field. Placing it first drastically reduces the dataset the engine must scan.",
+        "good_example": "event.type = 'Process Creation' src.process.cmdline contains 'powershell'",
+        "bad_example": "* contains 'powershell'"
+      },
+      {
+        "priority": 3,
+        "rule": "Prefer exact match over wildcard/regex",
+        "speed_ranking": [
+          "field = 'value'  \u2192  Fastest (exact index lookup)",
+          "field in ('a', 'b', 'c')  \u2192  Fast (set membership check)",
+          "field contains 'substring'  \u2192  Moderate (substring scan)",
+          "field matches 'regex'  \u2192  Slowest (full regex evaluation)",
+          "* contains 'term'  \u2192  Slowest (scans all fields)"
+        ]
+      },
+      {
+        "priority": 4,
+        "rule": "Use specific fields instead of wildcard *",
+        "description": "Replace broad wildcard searches with targeted field searches",
+        "bad_example": "* contains 'mimikatz'",
+        "good_example": "event.type = 'Process Creation' and (src.process.cmdline contains 'mimikatz' or tgt.process.cmdline contains 'mimikatz' or tgt.file.path contains 'mimikatz')"
+      },
+      {
+        "priority": 5,
+        "rule": "Minimize regex complexity",
+        "description": "Complex lookahead/lookbehind regex is expensive. Replace with explicit field exclusions where possible.",
+        "bad_example": "dst.ip.address matches \"^(?!10\\.|172\\.(1[6-9]|2|3[01])\\.|192\\.168\\.).*\"",
+        "good_example": "event.type = 'IP Connect' and not (dst.ip.address contains '192.168.') and not (dst.ip.address contains '172.16.') and dst.ip.address != '10.*'"
+      },
+      {
+        "priority": 6,
+        "rule": "Filter before grouping in PowerQuery",
+        "description": "Apply as many filters as possible in the base search clause rather than in post-aggregation | filter stages",
+        "good_example": "event.type = 'IP Connect' event.network.connectionStatus = 'SUCCESS' dst.port.number = 443 | group count = count() by endpoint.name",
+        "bad_example": "event.type = 'IP Connect' | group count = count() by endpoint.name, event.network.connectionStatus, dst.port.number | filter event.network.connectionStatus = 'SUCCESS' && dst.port.number = 443"
+      },
+      {
+        "priority": 7,
+        "rule": "Use | limit during exploration",
+        "description": "Add | limit 100 to exploratory PowerQuery pipelines to avoid pulling unnecessary result volumes during initial investigation."
+      }
+    ]
+  },
+  "query_library": {
+    "process_hunting": [
+      {
+        "id": "PROC-001",
+        "title": "Suspicious PowerShell with Encoded Commands",
+        "mitre": "T1059.001",
+        "query": "event.type = 'Process Creation' and (src.process.cmdline contains '-encodedcommand' or src.process.cmdline contains 'frombase64string' or tgt.process.cmdline contains '-encodedcommand')"
+      },
+      {
+        "id": "PROC-002",
+        "title": "Processes Spawned from Temp Directories",
+        "mitre": "T1204",
+        "query": "event.type = 'Process Creation' tgt.process.image.path contains '\\\\Temp\\\\' src.process.verifiedStatus != 'verified'"
+      },
+      {
+        "id": "PROC-003",
+        "title": "Unsigned Process Injection (Cross-Process Activity)",
+        "mitre": "T1055",
+        "query": "event.type = 'Open Remote Process Handle' src.process.verifiedStatus != 'verified' src.process.publisher != 'MICROSOFT WINDOWS' tgt.process.verifiedStatus = 'verified'"
+      },
+      {
+        "id": "PROC-004",
+        "title": "Process Tree Analysis for a Specific Host (PowerQuery)",
+        "query": "endpoint.name = 'WORKSTATION-01' | group eventcount = count() by endpoint.name, src.process.name, src.process.cmdline, user.name | columns endpoint.name, src.process.name, src.process.cmdline, user.name, eventcount | sort -eventcount"
+      },
+      {
+        "id": "PROC-005",
+        "title": "Frequency of Occurrence \u2014 Rundll32 Parent Analysis",
+        "query": "src.process.name = 'rundll32.exe' | group eventcount = count() by src.process.name, src.process.parent.name | columns src.process.name, src.process.parent.name, eventcount | sort -eventcount"
+      }
+    ],
+    "lolbin_detection": [
+      {
+        "id": "LOL-001",
+        "title": "Rundll32 or Regsvr32 Executing Scripting Engines",
+        "mitre": "T1218.011",
+        "query": "event.type = 'Process Creation' and (src.process.displayName = 'Windows host process (Rundll32)' or src.process.displayName = 'Microsoft(C) Register Server') and src.process.cmdline matches \".*(javascript|mshtml|runhtmlapplication).*\""
+      },
+      {
+        "id": "LOL-002",
+        "title": "CMD Chained Execution with Common LOLBins",
+        "mitre": "T1059.003",
+        "query": "event.type = 'Process Creation' src.process.cmdline contains 'cmd' src.process.cmdline contains '/c' src.process.cmdline matches \".*(at|sc|schtasks|wmic)(\\\\s|\\\\\\\"|.exe).*\""
+      }
+    ],
+    "file_system_monitoring": [
+      {
+        "id": "FILE-001",
+        "title": "Executable Files Dropped to Sensitive Directories",
+        "mitre": "T1105",
+        "query": "event.type = 'File Creation' tgt.file.extension in ('dll', 'exe', 'ps1', 'bat', 'cmd', 'js', 'vbs') tgt.file.path contains 'C:\\\\Windows\\\\Temp'"
+      },
+      {
+        "id": "FILE-002",
+        "title": "Unverified Process Writing Executables to Temp",
+        "mitre": "T1036",
+        "query": "endpoint.os = 'windows' event.type = 'File Creation' tgt.file.path contains 'temp' tgt.file.isExecutable = true src.process.verifiedStatus != 'verified' src.process.publisher != 'MICROSOFT WINDOWS'"
+      },
+      {
+        "id": "FILE-003",
+        "title": "Archive File Creation (Potential Data Staging)",
+        "mitre": "T1560",
+        "query": "event.type = 'File Creation' tgt.file.extension in ('zip', '7z', 'rar', 'gzip', 'tar')"
+      },
+      {
+        "id": "FILE-004",
+        "title": "Batch or CMD Files Dropped to Windows Temp",
+        "query": "event.type = 'File Creation' tgt.file.path contains '\\\\windows\\\\temp' and (tgt.file.path matches \".*\\\\.bat$\" or tgt.file.path matches \".*\\\\.cmd$\")"
+      }
+    ],
+    "network_and_dns": [
+      {
+        "id": "NET-001",
+        "title": "Outbound Connections to Non-Standard Ports",
+        "mitre": "T1071",
+        "query": "event.type = 'IP Connect' event.network.direction = 'OUTGOING' event.network.connectionStatus = 'SUCCESS' dst.port.number != 80 dst.port.number != 443 dst.port.number != 53"
+      },
+      {
+        "id": "NET-002",
+        "title": "DNS Queries for Suspicious Domain with Host Breakdown",
+        "query": "event.dns.request contains 'suspicious-domain.com' | group eventcount = count() by endpoint.name, event.dns.request | columns endpoint.name, event.dns.request, eventcount | sort -eventcount"
+      },
+      {
+        "id": "NET-003",
+        "title": "SMB Lateral Movement (Port 445 Outbound)",
+        "mitre": "T1021.002",
+        "query": "event.type = 'IP Connect' event.network.connectionStatus = 'SUCCESS' dst.port.number = 445 event.network.direction = 'OUTGOING'"
+      },
+      {
+        "id": "NET-004",
+        "title": "Outbound Connections to Public IPs with Process Context",
+        "query": "event.type = 'IP Connect' dst.ip.address matches \"^([0-9]{1,3}\\\\.){3}[0-9]{1,3}$\" event.network.connectionStatus = 'SUCCESS' | group eventcount = count() by endpoint.name, src.process.name, src.process.cmdline, dst.ip.address, dst.port.number | columns endpoint.name, src.process.name, dst.ip.address, dst.port.number, eventcount | sort -eventcount"
+      },
+      {
+        "id": "NET-005",
+        "title": "Lateral Movement \u2014 WinRM and RPC Ports",
+        "mitre": "T1021.006",
+        "query": "event.type = 'IP Connect' dst.port.number in ('135', '5985', '5986') event.network.direction = 'OUTGOING' src.process.name != 'svchost.exe'"
+      },
+      {
+        "id": "NET-006",
+        "title": "HTTP POST from Scripting Process",
+        "query": "event.url.action = 'POST' src.process.cmdline contains 'ps1'"
+      },
+      {
+        "id": "NET-007",
+        "title": "IP Range Scan Detection",
+        "query": "event.type = 'IP Connect' src.ip.address > '192.168.21.1' src.ip.address < '192.168.21.100' event.network.connectionStatus = 'SUCCESS' dst.port.number = 445"
+      }
+    ],
+    "persistence": [
+      {
+        "id": "PERS-001",
+        "title": "Task Registration from Suspicious Parent Processes",
+        "mitre": "T1053.005",
+        "query": "event.type = 'Task Register' osSrc.process.cmdline contains 'wscript' or osSrc.process.cmdline contains 'cmd' or osSrc.process.cmdline contains 'powershell'"
+      },
+      {
+        "id": "PERS-002",
+        "title": "Service Creation by Non-SYSTEM Users",
+        "mitre": "T1543.003",
+        "query": "indicator.name = 'ServiceCreate' src.process.parent.user != 'NT AUTHORITY\\\\SYSTEM'"
+      },
+      {
+        "id": "PERS-003",
+        "title": "Service Creation with Update Keywords (Masquerading)",
+        "query": "indicator.name = 'ServiceCreate' task.serviceName contains 'update'"
+      }
+    ],
+    "identity_and_auth": [
+      {
+        "id": "AUTH-001",
+        "title": "Failed Login Attempts by User",
+        "mitre": "T1110",
+        "query": "event.category = 'logins' | group NumberOfFailedAttempts = count(event.login.loginIsSuccessful = false) by event.login.userName, endpoint.name | sort -NumberOfFailedAttempts"
+      }
+    ],
+    "rmm_tools": [
+      {
+        "id": "RMM-001",
+        "title": "AnyDesk Execution Detection",
+        "mitre": "T1219",
+        "query": "event.type = 'Process Creation' and (src.process.cmdline contains 'anydesk' or tgt.process.cmdline contains 'anydesk')",
+        "note": "Substitute anydesk with ScreenConnect, TeamViewer, AmmyyAdmin, etc. for broader coverage"
+      }
+    ],
+    "ioc_sweeps": [
+      {
+        "id": "IOC-001",
+        "title": "Hash-Based IOC Search with Endpoint Summary",
+        "query": "tgt.file.sha256 = 'abc123def456...' | group eventcount = count() by endpoint.name, src.process.displayName | columns endpoint.name, src.process.displayName, eventcount | sort -eventcount"
+      }
+    ],
+    "anomaly_detection": [
+      {
+        "id": "ANOM-001",
+        "title": "High-Connection-Count Hosts",
+        "query": "event.type = 'IP Connect' | group connection_count = sum(src.process.netConnCount) by user.name, endpoint.name | columns endpoint.name, user.name, connection_count | filter connection_count >= 5000 | sort -connection_count"
+      },
+      {
+        "id": "ANOM-002",
+        "title": "Error Rate by Endpoint",
+        "query": "| group total_requests = count(), errors = count(status >= 500) by endpoint.name | let error_percent = errors * 100 / total_requests | filter error_percent > 5"
+      }
+    ],
+    "mitre_ttp_hunting": [
+      {
+        "id": "MITRE-001",
+        "title": "Process Injection Indicators",
+        "mitre": "T1055",
+        "query": "indicator.name contains 'injection'"
+      },
+      {
+        "id": "MITRE-002",
+        "title": "Credential Access Indicators",
+        "mitre": "T1003",
+        "query": "indicator.name contains 'credential'"
+      },
+      {
+        "id": "MITRE-003",
+        "title": "Service-Related Persistence Indicators",
+        "mitre": "T1543",
+        "query": "indicator.name contains 'service'"
+      }
+    ]
+  },
+  "constraints_and_limitations": {
+    "syntax_constraints": [
+      {
+        "constraint": "Boolean keyword case-sensitivity",
+        "detail": "and, or, not MUST be lowercase. Using AND, OR, NOT will cause syntax errors."
+      },
+      {
+        "constraint": "OR must use parentheses",
+        "detail": "OR clauses must always be wrapped in parentheses: (clause_a or clause_b)"
+      },
+      {
+        "constraint": "String values require single quotes",
+        "detail": "All string literal values must be enclosed in single quotes: field = 'value'"
+      },
+      {
+        "constraint": "Case-sensitive field names and values",
+        "detail": "event.type = 'Process Creation' is valid; 'process creation' or 'PROCESS CREATION' are not."
+      },
+      {
+        "constraint": "No comment support in XDR console",
+        "detail": "-- style comments are not supported in the XDR console search bar. Use an external IDE or version control for documentation."
+      },
+      {
+        "constraint": "No multi-line queries in XDR console",
+        "detail": "The console does not support multi-line query entry. Write full queries on a single logical line."
+      },
+      {
+        "constraint": "tgt.file.extension excludes the dot",
+        "detail": "Use tgt.file.extension = 'exe' NOT tgt.file.extension = '.exe'"
+      }
+    ],
+    "star_rule_constraints": [
+      {
+        "constraint": "No retroactive matching",
+        "detail": "STAR rules only evaluate events as they are newly ingested. They do not scan historical data retroactively. Use Deep Visibility for retrospective analysis."
+      },
+      {
+        "constraint": "No PowerQuery in STAR",
+        "detail": "Aggregation pipeline stages (group, sort, join, union, etc.) are NOT supported in STAR rule conditions. Only base S1QL 2.0 filter syntax is valid."
+      },
+      {
+        "constraint": "Not real-time blocking",
+        "detail": "STAR rules are designed for detection and mitigation, not real-time application blocking. Response latency can be up to ~1 minute. Use hash-based blocklists for true real-time prevention."
+      },
+      {
+        "constraint": "Rule count limits",
+        "detail": "Default: 100 rules (Singularity Complete). Upgradeable in packs of 300. Maximum: 1000 rules."
+      },
+      {
+        "constraint": "Alert-only validation required",
+        "detail": "New STAR rules should run in alert-only mode for at least one week before enabling automated response actions. This prevents automated response against false positives."
+      }
+    ],
+    "data_retention_constraints": [
+      {
+        "constraint": "Retention window varies by license",
+        "detail": "Default retention is 14 days. Extended retention of up to 365 days is available depending on license tier."
+      },
+      {
+        "constraint": "Retrospective maximum",
+        "detail": "Deep Visibility retrospective search supports up to 90 days of historical telemetry for threat hunting (within the retention window)."
+      },
+      {
+        "constraint": "Always-hot data",
+        "detail": "No cold-storage retrieval delays. All data within the retention window is immediately queryable."
+      }
+    ],
+    "performance_constraints": [
+      {
+        "constraint": "Wildcard * field search is slowest",
+        "detail": "* contains 'value' scans all indexed fields and is significantly slower than targeting specific fields."
+      },
+      {
+        "constraint": "Complex regex impacts performance",
+        "detail": "Regex with lookahead/lookbehind constructs are expensive. Simplify or replace with explicit field filters."
+      },
+      {
+        "constraint": "Post-aggregation filters are less efficient",
+        "detail": "Filtering after grouping (| filter) processes more data than equivalent base search filters. Move filters to the base query where possible."
+      }
+    ]
+  },
+  "v1_to_v2_migration": {
+    "key_differences": [
+      {
+        "aspect": "Field naming",
+        "v1": "Flat names (e.g., SrcProcName)",
+        "v2": "Dot notation (e.g., src.process.name)"
+      },
+      {
+        "aspect": "Boolean syntax",
+        "v1": "AND, OR (case-insensitive)",
+        "v2": "and, or (lowercase only)"
+      },
+      {
+        "aspect": "String matching",
+        "v1": "ContainsCIS, ContainsAnyCase",
+        "v2": "contains (case-insensitive by default)"
+      },
+      {
+        "aspect": "Regex",
+        "v1": "RegExp \"pattern\"",
+        "v2": "matches \"pattern\""
+      },
+      {
+        "aspect": "Negation",
+        "v1": "Does Not ContainCIS",
+        "v2": "not (field contains 'val') or !="
+      },
+      {
+        "aspect": "Query length",
+        "v1": "Character limit enforced",
+        "v2": "Expanded / lifted character limit"
+      },
+      {
+        "aspect": "Comments",
+        "v1": "Supported",
+        "v2": "Not supported in XDR console"
+      },
+      {
+        "aspect": "Cross-table fields",
+        "v1": "Could cause errors",
+        "v2": "Handled gracefully"
+      }
+    ],
+    "common_translations": [
+      {
+        "v1": "SrcProcName = \"cmd.exe\" AND SrcProcCmdLine ContainsCIS \"whoami\"",
+        "v2": "src.process.name = 'cmd.exe' src.process.cmdline contains 'whoami'"
+      },
+      {
+        "v1": "ObjectType = \"process\" AND TgtProcName = \"powershell.exe\"",
+        "v2": "event.type = 'Process Creation' tgt.process.name = 'powershell.exe'"
+      },
+      {
+        "v1": "DstPort = \"445\" AND Direction = \"OUTGOING\"",
+        "v2": "dst.port.number = 445 event.network.direction = 'OUTGOING'"
+      },
+      {
+        "v1": "FileFullName EndswithCIS \".bat\"",
+        "v2": "tgt.file.extension = 'bat'"
+      },
+      {
+        "v1": "SrcProcCmdLine RegExp \"schtasks\"",
+        "v2": "src.process.cmdline matches \"schtasks\""
+      }
+    ],
+    "automated_conversion": {
+      "tool": "CyberMaxx open-source v1-to-v2 converter",
+      "warning": "Conversions are not always one-to-one. Field mappings and logic structures may shift. Always validate converted queries before deploying to production or STAR rules."
+    }
+  },
+  "operational_best_practices": {
+    "query_development_workflow": [
+      "1. Start broad \u2014 Use a simple event.type filter with a short time range to understand the data landscape",
+      "2. Add specificity \u2014 Layer in field filters to narrow results to your hypothesis",
+      "3. Exclude noise \u2014 Add != and not clauses for known-good activity",
+      "4. Aggregate \u2014 Pipe results through | group ... | sort to identify patterns and outliers",
+      "5. Validate \u2014 Manually review a sample of results to confirm they represent true positives",
+      "6. Promote to STAR \u2014 Convert validated queries into detection rules with alert-only mode first"
+    ],
+    "saved_search_naming_taxonomy": [
+      "[Hunt] T1059.001 - PowerShell Encoded Commands",
+      "[IOC] SHA256 Sweep - Campaign XYZ",
+      "[Baseline] Normal RMM Tool Usage",
+      "[Anomaly] High Failed Login Rate"
+    ],
+    "storyline_pivot": {
+      "description": "When a suspicious event is found, pivot on its Storyline ID to retrieve the full attack chain",
+      "query_pattern": "src.process.storyline.id = '<STORYLINE_ID_HERE>'",
+      "returns": "Complete chain of all processes, files, network connections, and registry modifications in the attack narrative"
+    },
+    "false_positive_reduction": {
+      "methods": [
+        "Exclude known-good processes: src.process.verifiedStatus != 'verified'",
+        "Exclude signed binaries: src.process.publisher != 'MICROSOFT WINDOWS'",
+        "Exclude specific hosts: endpoint.name != 'BUILD-SERVER-01'",
+        "Exclude standard user accounts for service-related events",
+        "Run in alert-only mode for minimum 1 week before enabling automated response"
+      ]
+    },
+    "purple_ai_guidance": [
+      "Use Purple AI to accelerate initial query drafting",
+      "Always review and refine generated S1QL 2.0 syntax before saving",
+      "Do not promote Purple AI queries directly to STAR rules without manual validation",
+      "Especially useful for analysts still learning the v2 schema"
+    ],
+    "version_control": {
+      "recommendation": "Maintain STAR rules and hunt queries in YAML files under Git version control",
+      "community_resources": [
+        "keyboardcrunch/sentinelone-queries (GitHub) \u2014 YAML query files mapped to MITRE ATT&CK",
+        "acquiredsecurity/Sentinel-One-STAR-Rules-Threat-Hunts (GitHub) \u2014 STAR rules for ransomware and APT behaviors",
+        "NerbalOne/SentinelOne-Queries (GitHub) \u2014 Standard and PowerQuery collection by OS",
+        "dannyroemhild/sentinelone-star-queries (GitHub) \u2014 STAR query collection"
+      ]
+    }
+  },
+  "cheat_sheet": {
+    "operators_quick_reference": {
+      "=": "Exact match (case-sensitive)",
+      "!=": "Not equal (shorthand for and not)",
+      "contains": "Case-insensitive substring match",
+      "in ('a','b')": "Set membership check",
+      "matches \"pattern\"": "PCRE regex match",
+      ">": "Greater than (range comparison)",
+      "<": "Less than (range comparison)",
+      ">=": "Greater than or equal",
+      "<=": "Less than or equal",
+      "space_between_clauses": "Implicit AND",
+      "and": "Explicit AND (lowercase required)",
+      "(a or b)": "OR \u2014 always wrap in parentheses",
+      "not (clause)": "Negation",
+      "* contains": "Search all indexed fields (slowest)"
+    },
+    "powerquery_pipeline_quick_reference": {
+      "| group alias = count() by field": "Aggregate and group",
+      "| columns f1, f2, x = expr": "Select and compute columns",
+      "| sort -field": "Descending sort (remove - for ascending)",
+      "| filter condition": "Post-aggregation filter (SQL HAVING equivalent)",
+      "| let new_field = expr": "Computed field",
+      "| limit N": "Cap output rows",
+      "| parse \"regex\" from field": "Extract fields via regex",
+      "| transpose row X column Y": "Pivot rows to columns",
+      "| join a=(q1), b=(q2) on key": "Merge two result sets",
+      "| union (q1),(q2)": "Vertically combine result sets"
+    },
+    "aggregation_functions_quick_reference": {
+      "count()": "Count of records",
+      "count(condition)": "Conditional count",
+      "sum(field)": "Sum of numeric field",
+      "min(field)": "Minimum value",
+      "max(field)": "Maximum value",
+      "avg(field)": "Average value",
+      "percentile(field, N)": "Nth percentile",
+      "estimate_distinct(field)": "Approximate distinct count"
+    },
+    "high_value_fields_for_detection": [
+      "event.type \u2014 Always filter first, most selective indexed field",
+      "src.process.name / tgt.process.name \u2014 Process name",
+      "src.process.cmdline / tgt.process.cmdline \u2014 Full command line",
+      "src.process.image.path \u2014 Binary disk path",
+      "src.process.verifiedStatus \u2014 Signature status",
+      "src.process.publisher \u2014 Code-signing publisher",
+      "tgt.file.sha256 \u2014 File hash for IOC matching",
+      "tgt.file.extension \u2014 File type (without dot)",
+      "tgt.file.isExecutable \u2014 Boolean executable flag",
+      "dst.port.number \u2014 Network destination port",
+      "event.network.direction \u2014 INCOMING / OUTGOING",
+      "event.network.connectionStatus \u2014 SUCCESS / FAILURE",
+      "event.dns.request \u2014 DNS query hostname",
+      "indicator.name \u2014 Behavioral indicator / TTP name",
+      "src.process.storyline.id \u2014 Full attack chain pivot",
+      "endpoint.os \u2014 OS scoping: windows, linux, macos"
+    ]
+  }
+}

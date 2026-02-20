@@ -1,0 +1,2374 @@
+{
+  "metadata": {
+    "title": "Cribl DataLake Detection Engineering Knowledge Base",
+    "version": "2.0",
+    "purpose": "Comprehensive reference for detection engineering, KQL rule development, testing, and validation of detection logic on Cribl DataLake. Covers platform architecture, ingestion pipeline, schema design, KQL syntax constraints, output formatting standards, and SIEM/analytics integration patterns.",
+    "last_updated": "2025-02",
+    "maintainer": "Detection Engineering Team",
+    "platform_context": "Cribl DataLake is a cloud-native, schema-on-read data lake purpose-built for security and observability telemetry. It uses a KQL-compatible query interface layered over Apache Parquet columnar storage, optimized for high-volume, high-cardinality security event data.",
+    "kql_dialect_note": "Cribl DataLake's KQL implementation is compatible with Kusto Query Language (Azure Data Explorer / Microsoft Sentinel KQL) but has platform-specific constraints, optimizations, and unsupported features documented in this knowledge base.",
+    "tags": [
+      "cribl",
+      "cribl-datalake",
+      "kql",
+      "detection-engineering",
+      "security-analytics",
+      "data-lake",
+      "schema-on-read",
+      "parquet",
+      "knowledge-base"
+    ],
+    "schema_version": "1.0",
+    "kb_updated_at": "2025-01-01"
+  },
+  "platform_architecture": {
+    "overview": {
+      "description": "Cribl DataLake is a cloud-native security data lake that ingests, stores, and queries high-volume telemetry from any source. It is the storage and analytics layer of the Cribl suite, receiving data routed from Cribl Stream (the pipeline engine) or directly via S3-compatible APIs. Data is stored as Apache Parquet files partitioned by time and source, with a KQL-based query interface enabling detection engineers and analysts to search and correlate security events across months of data without pre-defined schemas.",
+      "design_philosophy": [
+        "Schema-on-read: no schema definition required at ingestion \u2014 fields are inferred from data at query time",
+        "Retention-first: stores 100% of raw data, unlike traditional SIEM which summarizes or drops events",
+        "Cost-optimized: Parquet columnar compression reduces storage costs 5-15x vs raw JSON/syslog",
+        "Query separation: detection/hunting queries do not share compute with ingestion",
+        "Cribl-native: designed to work alongside Cribl Stream for pipeline-processed data and Cribl Search for federated query"
+      ],
+      "deployment_models": [
+        {
+          "model": "Cribl Cloud (Managed SaaS)",
+          "description": "Fully managed. Cribl operates all infrastructure. DataLake storage backed by Cribl-managed S3. No infrastructure provisioning required.",
+          "telemetry_sources": [
+            "Cribl Stream (cloud workers)",
+            "Direct S3 ingestion",
+            "HTTP Event Collector (HEC)",
+            "Cribl Edge agents"
+          ],
+          "query_interface": "Cribl DataLake Search UI + Cribl Search API",
+          "tenant_isolation": "Per-organization tenant with isolated storage and compute"
+        },
+        {
+          "model": "Cribl Self-Hosted (On-Premises / Private Cloud)",
+          "description": "Customer-managed deployment. DataLake storage backed by customer-owned S3-compatible object store (MinIO, AWS S3, Azure Blob, GCS).",
+          "telemetry_sources": [
+            "Cribl Stream (on-prem workers)",
+            "Direct S3 write",
+            "Cribl Edge agents"
+          ],
+          "query_interface": "Cribl DataLake Search UI + Cribl Search API",
+          "infrastructure_requirement": "Kubernetes or VM-based Cribl deployment"
+        },
+        {
+          "model": "Cribl DataLake + Cribl Stream Hybrid",
+          "description": "Most common enterprise deployment. Cribl Stream processes, enriches, filters, and routes all telemetry. DataLake receives both raw and processed streams.",
+          "data_flow": "Sources \u2192 Cribl Edge (endpoint collection) \u2192 Cribl Stream (pipeline) \u2192 Cribl DataLake (storage + KQL query)"
+        }
+      ]
+    },
+    "core_components": {
+      "cribl_stream": {
+        "description": "The data pipeline engine. Receives telemetry from all sources, applies transformations, enrichment, routing, and reduction before delivering to DataLake. Key pre-processing layer that shapes what arrives in DataLake.",
+        "pipeline_functions_affecting_detection": [
+          {
+            "function": "Eval (field extraction)",
+            "detection_impact": "Extracts parsed fields from raw message text. Determines whether structured fields (src_ip, user, action) are available at query time."
+          },
+          {
+            "function": "Lookup Enrichment",
+            "detection_impact": "Joins events with external lookup tables (threat intel, asset inventory, user context) during pipeline processing \u2014 enriched fields are queryable in DataLake."
+          },
+          {
+            "function": "Suppress / Sampling",
+            "detection_impact": "May reduce event volume \u2014 sampled data must be accounted for in detection thresholds (sampled events represent N actual events)."
+          },
+          {
+            "function": "Redact / Mask",
+            "detection_impact": "PII masking may replace field values needed for investigation (e.g., masked IP addresses, usernames). Detection engineers must know which fields are masked."
+          },
+          {
+            "function": "Drop",
+            "detection_impact": "Dropped events create permanent telemetry gaps. Any event class dropped in Stream is invisible to DataLake detection."
+          },
+          {
+            "function": "Schema Normalization",
+            "detection_impact": "Maps vendor-specific fields to common schema (OCSF, ECS, custom). Normalized schemas enable cross-source correlation in detection rules."
+          }
+        ]
+      },
+      "cribl_datalake_storage": {
+        "description": "Object storage layer backed by S3-compatible storage. Events are serialized as Apache Parquet files and organized in a time-partitioned directory structure. Columnar Parquet format enables efficient predicate pushdown filtering \u2014 KQL queries on partitioned fields (time, source, index) bypass full data scans.",
+        "storage_format": "Apache Parquet (columnar, compressed with Snappy or ZSTD)",
+        "partitioning_scheme": {
+          "description": "Data is physically partitioned in object storage. Partitioning strategy directly impacts KQL query performance.",
+          "default_partitions": [
+            "year=YYYY",
+            "month=MM",
+            "day=DD",
+            "hour=HH",
+            "source_type=<source_type>",
+            "index=<index_name>"
+          ],
+          "performance_note": "KQL queries that include time range and source/index filters benefit from Parquet predicate pushdown \u2014 only relevant partition files are read. Queries without time ranges may scan all partitions."
+        },
+        "compaction": {
+          "description": "Small Parquet files from high-frequency ingestion are periodically compacted into larger files for query efficiency. Compaction runs asynchronously.",
+          "detection_implication": "Very recent data (last 15\u201330 minutes) may be in small un-compacted files \u2014 queries against recent data may be slower than historical queries."
+        },
+        "retention": {
+          "default": "Configurable per index (typically 90 days to 1 year)",
+          "extended": "Up to years \u2014 limited only by storage cost and configuration",
+          "hot_tier": "Recent data (last 7\u201330 days) may be stored in hot tier for faster access",
+          "cold_tier": "Older data moves to cold/glacier tier with higher query latency"
+        }
+      },
+      "cribl_search": {
+        "description": "Federated query engine that provides KQL-based querying across Cribl DataLake, Cribl Stream live data, and external data sources. The detection engineering query interface.",
+        "query_modes": [
+          {
+            "mode": "DataLake Query",
+            "description": "Queries historical data stored in Cribl DataLake Parquet files. Primary mode for detection rule development and historical analysis.",
+            "latency": "Seconds to minutes depending on data volume and query complexity"
+          },
+          {
+            "mode": "Live Tail",
+            "description": "Streams live events from Cribl Stream pipeline in near real-time. Useful for testing detection logic against live data.",
+            "latency": "Seconds (near real-time)"
+          },
+          {
+            "mode": "Federated Search",
+            "description": "Queries across multiple data sources simultaneously \u2014 DataLake + external S3 + Splunk + Elastic + other Cribl instances.",
+            "latency": "Varies by source"
+          }
+        ]
+      },
+      "cribl_edge": {
+        "description": "Lightweight agent deployed on endpoints and servers. Collects logs, metrics, and traces at source. Can process data locally before forwarding to Stream or DataLake.",
+        "collection_capabilities": [
+          "Windows Event Logs (via WinEventLog reader)",
+          "Linux syslog and journald",
+          "File tail (application logs, CSV, JSON)",
+          "Metrics (CPU, memory, disk, network)",
+          "Live process data",
+          "Custom scripts and commands"
+        ],
+        "detection_relevance": "Edge deployment ensures endpoint telemetry arrives in DataLake with low latency and minimal data loss. Edge can filter noise at source, preserving DataLake storage for high-value events."
+      },
+      "index_model": {
+        "description": "DataLake organizes data into named indexes (equivalent to Splunk indexes or Elastic indices). Each index represents a logical data category (e.g., endpoint_logs, network_traffic, auth_events, cloud_trail). Indexes are the primary data organization and access control boundary.",
+        "default_indexes": [
+          {
+            "index": "main",
+            "description": "Default catch-all index for unrouted data."
+          },
+          {
+            "index": "endpoint",
+            "description": "Endpoint telemetry \u2014 EDR, Sysmon, Windows Event Log, OSquery."
+          },
+          {
+            "index": "network",
+            "description": "Network telemetry \u2014 firewall, DNS, proxy, NetFlow, PCAP metadata."
+          },
+          {
+            "index": "auth",
+            "description": "Authentication events \u2014 Active Directory, Okta, Azure AD, VPN."
+          },
+          {
+            "index": "cloud",
+            "description": "Cloud infrastructure logs \u2014 AWS CloudTrail, Azure Activity, GCP Audit."
+          },
+          {
+            "index": "email",
+            "description": "Email security telemetry \u2014 Proofpoint, Mimecast, Defender for Office 365."
+          },
+          {
+            "index": "web",
+            "description": "Web proxy, WAF, CDN, application access logs."
+          },
+          {
+            "index": "vuln",
+            "description": "Vulnerability scanner results \u2014 Tenable, Qualys, Rapid7."
+          }
+        ],
+        "custom_index_guidance": "Define indexes to align with detection use cases \u2014 one index per major data source type or per business unit enables efficient KQL scoping and RBAC."
+      }
+    },
+    "data_pipeline_flow": {
+      "stages": [
+        {
+          "stage": 1,
+          "name": "Collection",
+          "description": "Telemetry collected from endpoints (Cribl Edge), network devices (syslog, SNMP, NetFlow), APIs (cloud, SaaS), and forwarded from existing SIEMs/SIEMs.",
+          "protocols": [
+            "Syslog (UDP/TCP/TLS)",
+            "HTTP/S (HEC, REST)",
+            "Kafka",
+            "Kinesis",
+            "S3 (batch)",
+            "SNMP",
+            "gRPC"
+          ]
+        },
+        {
+          "stage": 2,
+          "name": "Processing (Cribl Stream)",
+          "description": "Events are parsed, normalized, enriched, filtered, and routed. Schema normalization to OCSF or custom schema may occur here.",
+          "key_operations": [
+            "Field extraction (regex, JSON, CSV, XML parsers)",
+            "Lookup enrichment (threat intel, asset context)",
+            "Timestamp normalization to UTC",
+            "Deduplication",
+            "Sampling/reduction",
+            "Routing to DataLake index"
+          ]
+        },
+        {
+          "stage": 3,
+          "name": "Storage (Cribl DataLake)",
+          "description": "Processed events are written as Parquet files to S3-compatible storage. Partitioned by time and source.",
+          "write_format": "Apache Parquet",
+          "write_latency": "Buffered: events typically available for query within 30\u2013120 seconds of ingestion"
+        },
+        {
+          "stage": 4,
+          "name": "Query (Cribl Search / KQL)",
+          "description": "Detection rules, hunting queries, and dashboards execute KQL against DataLake Parquet files. Results returned to SIEM, SOAR, or analyst interface."
+        }
+      ]
+    }
+  },
+  "kql_language": {
+    "overview": {
+      "description": "Cribl DataLake's query interface uses a KQL (Kusto Query Language) dialect compatible with Azure Data Explorer (ADX) and Microsoft Sentinel KQL. It is a pipe-based, declarative query language where each operator transforms the result set from the previous operator. Cribl's implementation includes most standard KQL tabular operators and scalar functions, with platform-specific extensions for DataLake partition querying, and documented deviations from full ADX KQL.",
+      "execution_model": "Pipe-based tabular transformation: source | operator1 | operator2 | ... | render",
+      "case_sensitivity": {
+        "operators_and_functions": "Case-insensitive (where, project, summarize, WHERE, PROJECT, SUMMARIZE are equivalent)",
+        "field_names": "Case-sensitive in Cribl DataLake KQL. 'src_ip' and 'Src_IP' are different fields.",
+        "string_comparisons": "Case-sensitive by default. Use =~ for case-insensitive equality, !~ for case-insensitive not-equal, =~contains for case-insensitive contains."
+      },
+      "comment_syntax": "// Single-line comment. No block comments in standard KQL.",
+      "string_delimiters": "Double quotes (\"value\") or single quotes ('value') for string literals. Raw strings: @\"raw\\string\" (no escape processing)."
+    },
+    "query_structure": {
+      "basic_form": "<table_or_index> | <operator1> | <operator2> | ... | <render_or_terminal_operator>",
+      "cribl_datalake_source_syntax": {
+        "description": "In Cribl DataLake KQL, the source table is specified as the index name (single table per query) or using the union operator for cross-index queries.",
+        "single_index": "endpoint | where EventID == 4688",
+        "union_multiple_indexes": "union auth, endpoint | where _time > ago(24h)",
+        "time_range_always_required": "Always include a time filter using _time field or ago() function. Queries without time bounds scan all partitions.",
+        "cribl_specific_source": "index=\"endpoint\" (Cribl search UI syntax) maps to the table name in KQL syntax"
+      },
+      "canonical_query_template": "index_name\n| where _time > ago(24h)                     // Always first \u2014 enables partition pushdown\n| where field_name == \"value\"                 // Selective filters next\n| project field1, field2, field3              // Reduce columns early\n| summarize count() by field1, field2         // Aggregate if needed\n| order by count_ desc                        // Sort results\n| limit 1000                                   // Always limit output"
+    },
+    "tabular_operators": {
+      "filtering": [
+        {
+          "operator": "where",
+          "description": "Filters rows based on a predicate. Equivalent to SQL WHERE clause.",
+          "syntax": "| where <predicate>",
+          "example": "| where EventID == 4688 and CommandLine contains \"powershell\"",
+          "performance_note": "Place most selective filters first within a where clause. Time filters (where _time > ago(1h)) should always be the first where clause for partition pushdown.",
+          "cribl_notes": "Supports all standard KQL predicates. Compound predicates with 'and'/'or' are fully supported."
+        },
+        {
+          "operator": "filter",
+          "description": "Alias for 'where'. Identical behavior.",
+          "syntax": "| filter <predicate>",
+          "example": "| filter outcome == \"failure\""
+        },
+        {
+          "operator": "search",
+          "description": "Full-text search across all string fields in the current result set. Less efficient than field-specific where predicates.",
+          "syntax": "| search \"<term>\" [in (column1, column2)]",
+          "example": "| search \"mimikatz\"",
+          "performance_warning": "search without column scoping scans ALL string fields. Avoid in production detection rules \u2014 use explicit where clauses.",
+          "cribl_notes": "search operator is supported but may be slow on large datasets. Prefer: | where * contains \"term\""
+        }
+      ],
+      "projection_and_transformation": [
+        {
+          "operator": "project",
+          "description": "Selects and optionally renames columns. Drops all columns not listed.",
+          "syntax": "| project col1, col2, newname=expression",
+          "example": "| project _time, src_ip, dst_ip, user=actor_username, action",
+          "performance_note": "Use project early in the pipeline to reduce data volume carried through subsequent operators."
+        },
+        {
+          "operator": "project-away",
+          "description": "Drops specified columns, keeps all others. Inverse of project.",
+          "syntax": "| project-away col1, col2",
+          "example": "| project-away raw_message, _raw, _indextime"
+        },
+        {
+          "operator": "project-keep",
+          "description": "Keeps specified columns, drops all others. Alias behavior for project.",
+          "syntax": "| project-keep col1, col2",
+          "example": "| project-keep _time, EventID, user, src_ip"
+        },
+        {
+          "operator": "project-rename",
+          "description": "Renames columns without dropping others.",
+          "syntax": "| project-rename new_name=old_name",
+          "example": "| project-rename src_ip=client_address, user=actor_upn"
+        },
+        {
+          "operator": "extend",
+          "description": "Adds computed columns to the result set without dropping existing columns.",
+          "syntax": "| extend new_col = expression",
+          "example": "| extend domain = tostring(split(user_email, '@')[1]), hour_of_day = datetime_part('hour', _time)",
+          "cribl_notes": "Fully supported. Commonly used for field derivation in detection rules."
+        },
+        {
+          "operator": "parse",
+          "description": "Extracts values from string fields using pattern matching with wildcard (*) and literal anchors.",
+          "syntax": "| parse field with \"literal\" extracted_col1 \" \" extracted_col2 \"literal\"",
+          "example": "| parse CommandLine with * \"-EncodedCommand \" b64_payload \" \" *",
+          "cribl_notes": "Simpler alternative to extract() for structured text parsing. Use extract() with regex for complex patterns."
+        },
+        {
+          "operator": "evaluate",
+          "description": "Invokes plugin functions. In Cribl DataLake, limited subset of ADX plugins are available.",
+          "syntax": "| evaluate plugin_name(args)",
+          "cribl_limitations": [
+            "bag_unpack() \u2014 supported",
+            "ipv4_lookup() \u2014 supported where lookup tables are configured",
+            "Most ml/anomaly ADX plugins (autocluster, basket, diffpatterns) are NOT supported in Cribl DataLake"
+          ]
+        }
+      ],
+      "aggregation": [
+        {
+          "operator": "summarize",
+          "description": "Groups rows and computes aggregate functions. Equivalent to SQL GROUP BY with aggregate functions.",
+          "syntax": "| summarize <aggregation_expression> [by <group_by_columns>]",
+          "example": "| summarize count() by src_ip, EventID | order by count_ desc",
+          "cribl_notes": "Primary aggregation operator. Fully supported. Result column for count() is named count_ (with trailing underscore) by default \u2014 use alias to rename: summarize event_count=count()."
+        },
+        {
+          "operator": "count",
+          "description": "Returns the total number of rows in the current result set.",
+          "syntax": "| count",
+          "example": "endpoint | where EventID == 4688 | count",
+          "note": "Terminal operator \u2014 returns a single-row result with column 'Count'."
+        }
+      ],
+      "sorting_and_limiting": [
+        {
+          "operator": "order by",
+          "description": "Sorts result rows by specified columns.",
+          "syntax": "| order by col1 [asc|desc], col2 [asc|desc]",
+          "example": "| order by _time desc",
+          "aliases": [
+            "sort by"
+          ]
+        },
+        {
+          "operator": "top",
+          "description": "Returns the top N rows sorted by a specified column. More efficient than order by + limit.",
+          "syntax": "| top N by column [asc|desc]",
+          "example": "| top 10 by count_ desc"
+        },
+        {
+          "operator": "limit",
+          "description": "Returns at most N rows. Does not guarantee order.",
+          "syntax": "| limit N",
+          "example": "| limit 1000",
+          "aliases": [
+            "take"
+          ],
+          "detection_note": "Always include limit in investigation queries. Detection rules typically omit limit to ensure all matching events are returned."
+        },
+        {
+          "operator": "take",
+          "description": "Alias for limit. Returns N arbitrary rows.",
+          "syntax": "| take N",
+          "example": "| take 100"
+        }
+      ],
+      "joining_and_combining": [
+        {
+          "operator": "join",
+          "description": "Joins two tables on specified key columns. Core operator for multi-source detection correlation.",
+          "syntax": "table1 | join kind=<join_kind> (table2 | where ...) on key_column",
+          "join_kinds": [
+            {
+              "kind": "inner",
+              "description": "Only rows with matching keys in both tables. Default."
+            },
+            {
+              "kind": "leftouter",
+              "description": "All rows from left table; matching rows from right table (null if no match)."
+            },
+            {
+              "kind": "rightouter",
+              "description": "All rows from right table; matching rows from left table."
+            },
+            {
+              "kind": "fullouter",
+              "description": "All rows from both tables."
+            },
+            {
+              "kind": "leftsemi",
+              "description": "Only rows from left table that have a match in right table. Does not return right table columns."
+            },
+            {
+              "kind": "leftanti",
+              "description": "Only rows from left table that do NOT have a match in right table. Used for 'NOT IN' correlation."
+            },
+            {
+              "kind": "rightsemi",
+              "description": "Only rows from right table with a match in left."
+            },
+            {
+              "kind": "rightanti",
+              "description": "Only rows from right table without a match in left."
+            }
+          ],
+          "example": "auth\n| where _time > ago(1h) and outcome == \"failure\"\n| join kind=leftsemi (\n    auth\n    | where _time > ago(1h) and outcome == \"success\"\n) on src_ip",
+          "cribl_limitations": [
+            "Large join operations (millions of rows on both sides) may time out or be memory-constrained.",
+            "Broadcast join optimization applies when right side is small (<100K rows) \u2014 performance degrades significantly for large right-side tables.",
+            "join does not support joining more than 2 tables in a single operation \u2014 chain multiple joins for 3+ sources.",
+            "Column name conflicts between left and right tables result in suffixed column names (_x for left, _y for right) \u2014 use project-rename post-join."
+          ]
+        },
+        {
+          "operator": "union",
+          "description": "Combines result sets from multiple tables (indexes) into a single result set. Equivalent to SQL UNION ALL.",
+          "syntax": "union [kind=outer|inner] table1, table2, ...",
+          "example": "union auth, endpoint, network | where _time > ago(1h)",
+          "cribl_notes": "kind=outer (default) includes all columns from all tables, filling nulls for missing columns. kind=inner includes only columns common to all tables.",
+          "performance_note": "Each table in union is queried independently and results merged. Time filters after union are applied post-merge \u2014 place time filters within each table before union for partition pushdown."
+        },
+        {
+          "operator": "lookup",
+          "description": "Enriches rows from a static lookup table (CSV, JSON, or DataLake reference table). Equivalent to a left outer join against a reference dataset.",
+          "syntax": "| lookup lookup_table_name on key_column",
+          "example": "| lookup threat_intel_iocs on src_ip\n| where isnotempty(ioc_category)",
+          "cribl_notes": "Lookup tables must be pre-configured in Cribl DataLake as reference datasets. Supports exact match joins only \u2014 no range or partial lookups."
+        }
+      ],
+      "time_operators": [
+        {
+          "operator": "bin",
+          "description": "Rounds datetime values to a fixed interval bucket. Essential for time-series aggregation and trend analysis.",
+          "syntax": "| summarize count() by bin(_time, interval)",
+          "intervals": "1m, 5m, 15m, 30m, 1h, 1d, 7d",
+          "example": "| summarize login_failures=count() by bin(_time, 5m), src_ip",
+          "cribl_notes": "bin() is the standard time bucketing function. Use bin_auto() for auto-selected interval based on query time range."
+        },
+        {
+          "operator": "make-series",
+          "description": "Creates time-series arrays for anomaly detection and trend analysis.",
+          "syntax": "| make-series agg_expr on _time from start_time to end_time step interval by group_column",
+          "example": "| make-series logins=count() on _time from ago(7d) to now() step 1h by src_ip",
+          "cribl_limitations": "make-series is supported but anomaly detection functions (series_decompose_anomalies, series_fit_line) may have limited support \u2014 verify in your DataLake version."
+        }
+      ],
+      "parsing_operators": [
+        {
+          "operator": "parse-where",
+          "description": "Combines parsing with filtering \u2014 only keeps rows that match the parse pattern.",
+          "syntax": "| parse-where field with pattern",
+          "example": "| parse-where message with * \"Error: \" error_detail \" at line\" *"
+        },
+        {
+          "operator": "mv-expand",
+          "description": "Expands multi-value columns (arrays, dynamic objects) into individual rows. Critical for handling JSON arrays in security data.",
+          "syntax": "| mv-expand column_name",
+          "example": "| mv-expand target_accounts\n| extend account_name = tostring(target_accounts['name'])",
+          "cribl_notes": "Fully supported. Use after parse_json() to expand JSON array fields into queryable rows."
+        },
+        {
+          "operator": "mv-apply",
+          "description": "Applies a subquery to each element of a multi-value column. More powerful than mv-expand for complex transformations.",
+          "syntax": "| mv-apply element=column_name to typeof(string) on (where element contains \"value\")",
+          "cribl_notes": "Supported in Cribl DataLake. Useful for filtering specific elements from JSON arrays without expanding all rows."
+        }
+      ],
+      "deduplication": [
+        {
+          "operator": "distinct",
+          "description": "Returns the distinct combinations of the specified columns.",
+          "syntax": "| distinct col1, col2",
+          "example": "| distinct src_ip, user",
+          "note": "Returns unique rows. All combinations are returned \u2014 use summarize count() for counts of distinct values."
+        },
+        {
+          "operator": "summarize dcount()",
+          "description": "Returns approximate count of distinct values. Uses HyperLogLog algorithm \u2014 approximate above 1M distinct values.",
+          "example": "| summarize unique_users=dcount(user) by src_ip",
+          "accuracy": "~1% error rate for high-cardinality fields"
+        }
+      ]
+    },
+    "scalar_functions": {
+      "string_functions": [
+        {
+          "function": "contains(column, 'value')",
+          "description": "Case-sensitive substring match.",
+          "example": "where CommandLine contains 'powershell'"
+        },
+        {
+          "function": "contains_cs(column, 'value')",
+          "description": "Explicitly case-sensitive contains.",
+          "example": "where path contains_cs 'System32'"
+        },
+        {
+          "function": "!contains(column, 'value')",
+          "description": "String does NOT contain value.",
+          "example": "where CommandLine !contains 'legit'"
+        },
+        {
+          "function": "startswith(column, 'value')",
+          "description": "String starts with prefix.",
+          "example": "where ParentProcessName startswith 'C:\\Windows'"
+        },
+        {
+          "function": "endswith(column, 'value')",
+          "description": "String ends with suffix.",
+          "example": "where filename endswith '.exe'"
+        },
+        {
+          "function": "has(column, 'value')",
+          "description": "Whole-word match within string. More efficient than contains for word-boundary searches.",
+          "example": "where CommandLine has 'cmd'"
+        },
+        {
+          "function": "has_any(column, dynamic(['v1','v2']))",
+          "description": "String has any of the listed whole-word values.",
+          "example": "where CommandLine has_any (dynamic(['mimikatz','sekurlsa','lsadump']))"
+        },
+        {
+          "function": "has_all(column, dynamic(['v1','v2']))",
+          "description": "String has ALL of the listed values.",
+          "example": "where CommandLine has_all (dynamic(['powershell', '-enc']))"
+        },
+        {
+          "function": "matches regex(column, 'pattern')",
+          "description": "Regular expression match (RE2 syntax).",
+          "example": "where CommandLine matches regex @'(?i)powershell.*-e[ncodema]{0,6}\\s'"
+        },
+        {
+          "function": "extract(pattern, capture_group, source)",
+          "description": "Extracts a substring matching a regex capture group.",
+          "example": "extend ip=extract(@'(\\d+\\.\\d+\\.\\d+\\.\\d+)', 1, message)"
+        },
+        {
+          "function": "extractall(pattern, source)",
+          "description": "Returns all matches of a regex pattern as a dynamic array.",
+          "example": "extend all_ips=extractall(@'(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})', message)"
+        },
+        {
+          "function": "split(source, delimiter)",
+          "description": "Splits string by delimiter, returns dynamic array.",
+          "example": "extend parts=split(user_email, '@')"
+        },
+        {
+          "function": "trim(chars, source)",
+          "description": "Removes leading/trailing specified characters.",
+          "example": "extend clean=trim(' ', raw_value)"
+        },
+        {
+          "function": "replace(pattern, replacement, source)",
+          "description": "Replaces regex matches with replacement string.",
+          "example": "extend sanitized=replace(@'\\\\', '/', file_path)"
+        },
+        {
+          "function": "strlen(source)",
+          "description": "Returns string length.",
+          "example": "where strlen(CommandLine) > 1000"
+        },
+        {
+          "function": "toupper(source) / tolower(source)",
+          "description": "Converts string to upper/lower case.",
+          "example": "extend lower_cmd=tolower(CommandLine)"
+        },
+        {
+          "function": "strcat(s1, s2, ...)",
+          "description": "Concatenates strings.",
+          "example": "extend full_path=strcat(ParentDirectory, '\\\\', Filename)"
+        },
+        {
+          "function": "substring(source, start[, length])",
+          "description": "Extracts substring.",
+          "example": "extend prefix=substring(EventCode, 0, 2)"
+        },
+        {
+          "function": "indexof(source, lookup)",
+          "description": "Returns index of first occurrence of lookup in source (-1 if not found).",
+          "example": "where indexof(CommandLine, 'http') >= 0"
+        },
+        {
+          "function": "base64_decode_tostring(b64_string)",
+          "description": "Decodes a base64-encoded string. Critical for encoded PowerShell detection.",
+          "example": "extend decoded_cmd=base64_decode_tostring(encoded_payload)"
+        },
+        {
+          "function": "url_decode(url)",
+          "description": "URL-decodes a string.",
+          "example": "extend decoded_url=url_decode(request_uri)"
+        }
+      ],
+      "type_conversion": [
+        {
+          "function": "toint(value)",
+          "description": "Converts to integer. Returns null on failure.",
+          "example": "extend port_int=toint(dst_port)"
+        },
+        {
+          "function": "tolong(value)",
+          "description": "Converts to long integer.",
+          "example": "extend size_long=tolong(bytes_transferred)"
+        },
+        {
+          "function": "todouble(value)",
+          "description": "Converts to double-precision float.",
+          "example": "extend score=todouble(risk_score_str)"
+        },
+        {
+          "function": "tostring(value)",
+          "description": "Converts to string.",
+          "example": "extend event_str=tostring(EventID)"
+        },
+        {
+          "function": "tobool(value)",
+          "description": "Converts to boolean. 'true'/'1'\u2192true, 'false'/'0'\u2192false.",
+          "example": "extend is_admin=tobool(admin_flag)"
+        },
+        {
+          "function": "todatetime(value)",
+          "description": "Parses string to datetime.",
+          "example": "extend parsed_time=todatetime(timestamp_str)"
+        },
+        {
+          "function": "totimespan(value)",
+          "description": "Converts to timespan (duration).",
+          "example": "extend duration=totimespan('01:30:00')"
+        },
+        {
+          "function": "parse_json(json_string)",
+          "description": "Parses a JSON string into a dynamic object. Fields accessible via ['field_name'] notation.",
+          "example": "extend parsed=parse_json(json_field)\n| extend user=tostring(parsed['user']['name'])"
+        },
+        {
+          "function": "parse_ipv4(ip_string)",
+          "description": "Parses IPv4 string into a comparable integer. Enables CIDR comparison.",
+          "example": "extend ip_int=parse_ipv4(src_ip)"
+        },
+        {
+          "function": "parse_url(url_string)",
+          "description": "Parses URL into components (scheme, host, path, query, fragment).",
+          "example": "extend url_parts=parse_url(request_url)\n| extend hostname=tostring(url_parts['Host'])"
+        },
+        {
+          "function": "parse_path(path_string)",
+          "description": "Parses file path into components (root, directory, filename, extension).",
+          "example": "extend file_parts=parse_path(image_path)\n| extend extension=tostring(file_parts['Extension'])"
+        }
+      ],
+      "datetime_functions": [
+        {
+          "function": "now()",
+          "description": "Current UTC datetime.",
+          "example": "where _time > now() - 1h"
+        },
+        {
+          "function": "ago(timespan)",
+          "description": "Datetime that is <timespan> before now. Most common time filter.",
+          "example": "where _time > ago(24h)"
+        },
+        {
+          "function": "datetime(value)",
+          "description": "Datetime literal constructor.",
+          "example": "where _time between (datetime(2024-06-01) .. datetime(2024-06-30))"
+        },
+        {
+          "function": "datetime_part(part, datetime)",
+          "description": "Extracts a component of a datetime.",
+          "parts": [
+            "year",
+            "month",
+            "week_of_year",
+            "day",
+            "dayofweek",
+            "hour",
+            "minute",
+            "second"
+          ],
+          "example": "extend hour=datetime_part('hour', _time)"
+        },
+        {
+          "function": "dayofweek(datetime)",
+          "description": "Returns day of week as timespan (0=Sunday). Useful for off-hours detection.",
+          "example": "extend dow=dayofweek(_time)"
+        },
+        {
+          "function": "format_datetime(datetime, format)",
+          "description": "Formats datetime as string.",
+          "example": "extend date_str=format_datetime(_time, 'yyyy-MM-dd')"
+        },
+        {
+          "function": "between(value, low, high)",
+          "description": "True if value is between low and high inclusive.",
+          "example": "where _time between (ago(7d) .. ago(1d))"
+        }
+      ],
+      "ip_and_network_functions": [
+        {
+          "function": "ipv4_is_private(ip)",
+          "description": "Returns true if IPv4 address is RFC1918 private range.",
+          "example": "where not(ipv4_is_private(src_ip))"
+        },
+        {
+          "function": "ipv4_compare(ip1, ip2)",
+          "description": "Compares two IPv4 addresses as integers.",
+          "example": "where ipv4_compare(src_ip, '10.0.0.0') > 0"
+        },
+        {
+          "function": "ipv4_is_in_range(ip, cidr)",
+          "description": "Returns true if IP is within the specified CIDR range.",
+          "example": "where ipv4_is_in_range(src_ip, '192.168.1.0/24')"
+        },
+        {
+          "function": "ipv4_is_match(ip, cidr)",
+          "description": "Alias for ipv4_is_in_range.",
+          "example": "where ipv4_is_match(src_ip, '10.0.0.0/8')"
+        },
+        {
+          "function": "ipv6_compare(ip1, ip2)",
+          "description": "Compares two IPv6 addresses.",
+          "example": "where ipv6_compare(src_ipv6, '::1') != 0"
+        },
+        {
+          "function": "geo_info_from_ip_address(ip)",
+          "description": "Returns geolocation information for an IP address. Returns dynamic object with country, state, city, latitude, longitude.",
+          "example": "extend geo=geo_info_from_ip_address(src_ip)\n| extend country=tostring(geo['country'])"
+        },
+        {
+          "function": "parse_ipv4_mask(ip, mask)",
+          "description": "Applies subnet mask to IPv4 address for network matching.",
+          "example": "extend network=parse_ipv4_mask(src_ip, 24)"
+        }
+      ],
+      "conditional_functions": [
+        {
+          "function": "iff(condition, true_value, false_value)",
+          "description": "Ternary conditional.",
+          "example": "extend risk_label=iff(risk_score > 70, 'High', 'Low')"
+        },
+        {
+          "function": "iif(condition, true_value, false_value)",
+          "description": "Alias for iff.",
+          "example": "extend is_admin=iif(role == 'admin', true, false)"
+        },
+        {
+          "function": "case(cond1, val1, cond2, val2, ..., else_val)",
+          "description": "Multi-way conditional (switch/case).",
+          "example": "extend severity=case(\n    risk_score >= 90, 'Critical',\n    risk_score >= 70, 'High',\n    risk_score >= 50, 'Medium',\n    'Low'\n)"
+        },
+        {
+          "function": "coalesce(val1, val2, ...)",
+          "description": "Returns first non-null value.",
+          "example": "extend effective_user=coalesce(user, username, actor, 'Unknown')"
+        },
+        {
+          "function": "isnull(value)",
+          "description": "Returns true if value is null.",
+          "example": "where isnull(parent_process)"
+        },
+        {
+          "function": "isnotnull(value)",
+          "description": "Returns true if value is not null.",
+          "example": "where isnotnull(sha256_hash)"
+        },
+        {
+          "function": "isempty(value)",
+          "description": "Returns true if string is null or empty.",
+          "example": "where isempty(CommandLine)"
+        },
+        {
+          "function": "isnotempty(value)",
+          "description": "Returns true if string is non-null and non-empty.",
+          "example": "where isnotempty(user_agent)"
+        }
+      ],
+      "aggregate_functions": [
+        {
+          "function": "count()",
+          "description": "Count of non-null rows.",
+          "example": "| summarize total=count()"
+        },
+        {
+          "function": "count_distinct(col)",
+          "description": "Alias for dcount(). Exact count of distinct values (approximate above 1M).",
+          "example": "| summarize unique_users=count_distinct(user)"
+        },
+        {
+          "function": "dcount(col[, accuracy])",
+          "description": "Approximate distinct count. accuracy: 0-4 (default 1).",
+          "example": "| summarize approx_users=dcount(user, 2)"
+        },
+        {
+          "function": "dcountif(col, predicate)",
+          "description": "Approximate distinct count where predicate is true.",
+          "example": "| summarize failed_unique=dcountif(user, outcome == 'failure')"
+        },
+        {
+          "function": "sum(col)",
+          "description": "Sum of numeric values.",
+          "example": "| summarize total_bytes=sum(bytes_out)"
+        },
+        {
+          "function": "avg(col)",
+          "description": "Average of numeric values.",
+          "example": "| summarize avg_size=avg(file_size)"
+        },
+        {
+          "function": "max(col)",
+          "description": "Maximum value.",
+          "example": "| summarize last_seen=max(_time)"
+        },
+        {
+          "function": "min(col)",
+          "description": "Minimum value.",
+          "example": "| summarize first_seen=min(_time)"
+        },
+        {
+          "function": "stdev(col)",
+          "description": "Standard deviation.",
+          "example": "| summarize std_bytes=stdev(bytes_out)"
+        },
+        {
+          "function": "variance(col)",
+          "description": "Statistical variance.",
+          "example": "| summarize var_bytes=variance(bytes_out)"
+        },
+        {
+          "function": "percentile(col, pct)",
+          "description": "Nth percentile value.",
+          "example": "| summarize p95_bytes=percentile(bytes_out, 95)"
+        },
+        {
+          "function": "make_list(col[, max_size])",
+          "description": "Aggregates values into a dynamic array.",
+          "example": "| summarize urls=make_list(url, 100) by user"
+        },
+        {
+          "function": "make_set(col[, max_size])",
+          "description": "Aggregates distinct values into a dynamic array.",
+          "example": "| summarize countries=make_set(geo_country) by user"
+        },
+        {
+          "function": "arg_max(maximize_col, return_cols)",
+          "description": "Returns columns for the row with the maximum value of the specified column.",
+          "example": "| summarize arg_max(_time, *) by user"
+        },
+        {
+          "function": "arg_min(minimize_col, return_cols)",
+          "description": "Returns columns for the row with the minimum value.",
+          "example": "| summarize arg_min(_time, src_ip) by user"
+        },
+        {
+          "function": "countif(predicate)",
+          "description": "Count rows where predicate is true.",
+          "example": "| summarize failures=countif(outcome == 'failure'), successes=countif(outcome == 'success') by user"
+        },
+        {
+          "function": "sumif(col, predicate)",
+          "description": "Sum values where predicate is true.",
+          "example": "| summarize outbound_bytes=sumif(bytes, direction == 'outbound') by src_ip"
+        },
+        {
+          "function": "any(col)",
+          "description": "Returns an arbitrary (non-deterministic) value from the group.",
+          "example": "| summarize sample_agent=any(user_agent) by src_ip"
+        },
+        {
+          "function": "pack(key1, val1, key2, val2, ...)",
+          "description": "Creates a dynamic property bag (JSON object) from key-value pairs.",
+          "example": "| extend context=pack('user', user, 'src_ip', src_ip, 'action', action)"
+        }
+      ]
+    },
+    "constraints_and_limitations": {
+      "kql_dialect_deviations": {
+        "description": "Cribl DataLake KQL is compatible with ADX/Sentinel KQL but has the following deviations and unsupported features.",
+        "unsupported_operators": [
+          {
+            "operator": "externaldata",
+            "description": "ADX operator to query external blob storage by URL. Not supported \u2014 use Cribl lookup tables instead.",
+            "workaround": "Pre-load reference data as Cribl DataLake lookup tables and query with | lookup."
+          },
+          {
+            "operator": "materialize()",
+            "description": "ADX function to cache a subquery result for reuse. Not supported in Cribl DataLake.",
+            "workaround": "Rewrite the subquery or use let statements for query decomposition without caching."
+          },
+          {
+            "operator": "facet by",
+            "description": "ADX faceted search operator. Not supported.",
+            "workaround": "Use multiple summarize operations."
+          },
+          {
+            "operator": "fork",
+            "description": "ADX operator to split query into parallel branches. Not supported.",
+            "workaround": "Write separate queries for each branch."
+          },
+          {
+            "operator": "evaluate autocluster()",
+            "description": "ADX ML clustering plugin. Not supported.",
+            "workaround": "Export results to external ML pipeline."
+          },
+          {
+            "operator": "evaluate basket()",
+            "description": "ADX frequent itemsets plugin. Not supported.",
+            "workaround": "External analysis required."
+          },
+          {
+            "operator": "evaluate diffpatterns()",
+            "description": "ADX pattern diff plugin. Not supported.",
+            "workaround": "Compare summarize results manually."
+          },
+          {
+            "operator": "evaluate series_decompose_anomalies()",
+            "description": "Time-series anomaly detection. Partially supported \u2014 verify in current DataLake version.",
+            "workaround": "Use stdev-based threshold detection in KQL or export to external analytics."
+          }
+        ],
+        "unsupported_functions": [
+          "geo_distance_2points() \u2014 geographic distance calculation",
+          "http_request() \u2014 external HTTP calls from KQL",
+          "Tdigest functions (tdigest(), tdigest_merge(), percentile_tdigest())",
+          "Some format_timespan() overloads",
+          "stored_query_result() \u2014 ADX stored query results"
+        ],
+        "let_statement_support": {
+          "supported": true,
+          "description": "let statements for variable binding and function definition are fully supported.",
+          "example": "let time_window = 1h;\nlet suspicious_ips = dynamic(['198.51.100.1', '203.0.113.50']);\nauth\n| where _time > ago(time_window)\n| where src_ip in (suspicious_ips)",
+          "limitation": "Recursive let functions are not supported. let-defined tabular functions (views) have limited support \u2014 verify complex cases."
+        }
+      },
+      "query_execution_constraints": {
+        "max_query_duration": {
+          "description": "Queries that exceed the maximum execution time are automatically cancelled.",
+          "default_timeout": "300 seconds (5 minutes) for interactive queries",
+          "scheduled_rule_timeout": "600 seconds (10 minutes) for scheduled detection rules",
+          "mitigation": "Narrow time ranges, add selective filters, reduce join complexity."
+        },
+        "result_size_limits": {
+          "max_rows_returned": "Default 500,000 rows per query. Configurable up to 1,000,000.",
+          "max_result_size_bytes": "Typically 64 MB per query result.",
+          "detection_rule_note": "Detection rules should use summarize to aggregate results rather than returning raw events. Return only alert-relevant rows.",
+          "workaround": "Use | project to reduce column count, | summarize to aggregate, | limit to cap results."
+        },
+        "join_constraints": {
+          "right_table_max_rows": "Broadcast join optimization applies for right-side tables < 100K rows. Larger right tables cause significantly degraded performance.",
+          "max_join_nesting": "Avoid more than 3 levels of nested joins in a single query. Use sequential queries or let statements.",
+          "cross_index_join": "Joining across more than 2 indexes in a single query may timeout on large datasets. Use union + summarize as an alternative for many cross-source correlations."
+        },
+        "time_range_requirements": {
+          "description": "Always specify a time filter. Queries without time range filters scan ALL Parquet partitions which is extremely expensive.",
+          "minimum_recommendation": "Always include: | where _time > ago(<window>) as the first filter clause.",
+          "maximum_recommended_range": "Queries spanning more than 30 days should use summarize aggregation \u2014 returning raw events over 30 days will hit result size limits.",
+          "partition_pushdown": "Time filters using _time > ago() or _time between() are pushed to Parquet partition level \u2014 only relevant files are read."
+        },
+        "regex_performance": {
+          "description": "Complex regex patterns evaluated on high-cardinality string fields are computationally expensive.",
+          "best_practices": [
+            "Pre-filter with contains/startswith/endswith before applying matches regex",
+            "Use RE2 syntax \u2014 PCRE backreferences and lookaheads are not supported",
+            "Anchor regex patterns with ^ and $ where possible",
+            "Avoid .* at the beginning of patterns when possible"
+          ],
+          "re2_not_supported": [
+            "Lookahead/lookbehind assertions (?=...) (?!...)",
+            "Backreferences \\1",
+            "Atomic groups (?>...)",
+            "Possessive quantifiers a++"
+          ]
+        },
+        "dynamic_field_access": {
+          "description": "Accessing nested JSON fields via dynamic type requires parse_json() and bracket notation.",
+          "performance_note": "Dynamic field access (parsed_json['nested']['field']) is slower than top-level column access. Pre-extract frequently queried JSON subfields using extend during ingestion (Cribl Stream).",
+          "null_safety": "Always wrap dynamic field access in tostring() or coalesce() \u2014 accessing absent keys returns null, not error."
+        }
+      },
+      "schema_on_read_implications": {
+        "description": "Cribl DataLake's schema-on-read model means field names and types are not enforced at ingestion. This has significant implications for detection engineering.",
+        "field_name_inconsistency": {
+          "description": "The same logical field may have different names across data sources (e.g., src_ip vs source_ip vs client_ip vs ClientIPAddress).",
+          "mitigation": [
+            "Use OCSF (Open Cybersecurity Schema Framework) or ECS (Elastic Common Schema) normalization in Cribl Stream before DataLake storage",
+            "Implement field aliasing in Cribl Stream pipelines",
+            "Use union with project-rename to harmonize field names in multi-source detection rules",
+            "Build a field alias let statement library for common detection fields"
+          ]
+        },
+        "type_variability": {
+          "description": "The same field may arrive as string in some events and integer in others (e.g., EventID as '4688' vs 4688).",
+          "mitigation": "Use toint(), tostring() type coercion in detection rules. Never assume field type without validation."
+        },
+        "null_and_missing_fields": {
+          "description": "Fields absent from a source event result in null values in DataLake. Detection rules must handle null gracefully.",
+          "null_safe_patterns": [
+            "Use isnotempty() for string fields instead of != ''",
+            "Use isnotnull() before any comparison on potentially null fields",
+            "Use coalesce() for null-tolerant field references",
+            "Be aware: 'where field != value' does NOT match rows where field is null"
+          ]
+        }
+      },
+      "ingestion_and_availability": {
+        "write_latency": {
+          "description": "Events are buffered before being written to Parquet. Recent events may not be immediately queryable.",
+          "typical_latency": "30\u2013120 seconds from event ingestion to query availability",
+          "streaming_mode": "Use Cribl Search Live Tail for sub-30-second latency detection against live pipeline data",
+          "compaction_latency": "Uncompacted micro-files (last 5\u201315 minutes) may have slower query performance than compacted historical data"
+        },
+        "sampling_awareness": {
+          "description": "Cribl Stream may be configured to sample high-volume data sources before writing to DataLake. Sampled data must be interpreted carefully.",
+          "detection_implication": "If 1-in-N sampling is applied: count() results represent only 1/N of actual events. Threshold-based rules must account for sampling rate.",
+          "recommended_field": "If Cribl Stream adds a _sample_rate field during processing, include it in detection rule output for analyst context."
+        }
+      }
+    }
+  },
+  "data_models": {
+    "standard_cribl_fields": {
+      "description": "Fields present on all or most events in Cribl DataLake. These are either Cribl-added metadata fields or universal log fields normalized during Stream processing.",
+      "cribl_metadata_fields": [
+        {
+          "field": "_time",
+          "type": "datetime",
+          "description": "Event timestamp in UTC. Primary partition field for query performance. Always use in time filters.",
+          "source": "Cribl-extracted from source event timestamp or ingestion time"
+        },
+        {
+          "field": "_raw",
+          "type": "string",
+          "description": "Original raw event string before parsing. May be stored or dropped based on DataLake configuration. Field may be absent if raw storage is disabled.",
+          "detection_note": "Retain _raw for forensic investigation; set up Cribl Stream to conditionally drop _raw for high-volume low-value sources to save storage."
+        },
+        {
+          "field": "_indextime",
+          "type": "datetime",
+          "description": "Cribl DataLake ingestion timestamp. Differs from _time if source timestamps are delayed or incorrect.",
+          "detection_note": "Compare _time vs _indextime to detect clock skew or delayed log delivery."
+        },
+        {
+          "field": "index",
+          "type": "string",
+          "description": "DataLake index name where the event is stored.",
+          "example": "endpoint"
+        },
+        {
+          "field": "sourcetype",
+          "type": "string",
+          "description": "Identifier for the event schema/source type. Equivalent to Splunk sourcetype.",
+          "example": "windows:security",
+          "detection_note": "Filter by sourcetype to scope rules to specific data sources within an index."
+        },
+        {
+          "field": "source",
+          "type": "string",
+          "description": "Source identifier \u2014 hostname, file path, or integration name from which the event originated.",
+          "example": "WinEventLog:Security"
+        },
+        {
+          "field": "host",
+          "type": "string",
+          "description": "Hostname or IP of the system that generated the event.",
+          "example": "WORKSTATION-001.corp.com"
+        },
+        {
+          "field": "cribl_pipe",
+          "type": "string",
+          "description": "Cribl Stream pipeline name that processed the event. Useful for pipeline debugging and data lineage.",
+          "example": "windows_events_pipeline"
+        },
+        {
+          "field": "cribl_breaker",
+          "type": "string",
+          "description": "Event breaker rule that delimited this event from the raw stream."
+        },
+        {
+          "field": "cribl_worker_id",
+          "type": "string",
+          "description": "ID of the Cribl Stream worker that processed the event."
+        }
+      ]
+    },
+    "ocsf_normalized_schema": {
+      "description": "Open Cybersecurity Schema Framework (OCSF) v1.0 field reference. When Cribl Stream normalizes data to OCSF, these fields are queryable in DataLake. OCSF is the recommended normalization standard for cross-source detection engineering.",
+      "base_event_fields": [
+        {
+          "field": "class_uid",
+          "type": "integer",
+          "description": "OCSF event class numeric identifier.",
+          "example": 4001,
+          "classes": {
+            "1001": "File System Activity",
+            "1002": "Kernel Extension Activity",
+            "3001": "DNS Activity",
+            "3002": "HTTP Activity",
+            "3003": "RDP Activity",
+            "3004": "SMB Activity",
+            "3005": "SSH Activity",
+            "3006": "FTP Activity",
+            "4001": "Process Activity",
+            "4002": "Module Activity",
+            "4003": "Scheduled Job Activity",
+            "4004": "Service Activity",
+            "4005": "File System Activity",
+            "6001": "Security Finding",
+            "6002": "Vulnerability Finding",
+            "6003": "Compliance Finding",
+            "6004": "Detection Finding",
+            "7001": "Account Activity",
+            "7002": "Authentication",
+            "7003": "Authorize Session",
+            "7004": "Entity Management",
+            "7005": "Resource Activity",
+            "5001": "Network Activity",
+            "5002": "HTTP Activity",
+            "5003": "DNS Activity",
+            "5004": "RFB Activity",
+            "5007": "FTP Activity",
+            "5009": "Email Activity"
+          }
+        },
+        {
+          "field": "class_name",
+          "type": "string",
+          "description": "Human-readable event class name.",
+          "example": "Process Activity"
+        },
+        {
+          "field": "category_uid",
+          "type": "integer",
+          "description": "OCSF event category.",
+          "categories": {
+            "1": "System Activity",
+            "2": "Findings",
+            "3": "IAM",
+            "4": "Network Activity",
+            "5": "Discovery",
+            "6": "Application Activity"
+          }
+        },
+        {
+          "field": "category_name",
+          "type": "string",
+          "description": "Human-readable event category.",
+          "example": "System Activity"
+        },
+        {
+          "field": "activity_id",
+          "type": "integer",
+          "description": "Specific activity within the event class.",
+          "example": "1=Launch, 2=Terminate, 3=Open, 4=Inject (for Process Activity)"
+        },
+        {
+          "field": "activity_name",
+          "type": "string",
+          "description": "Human-readable activity name.",
+          "example": "Launch"
+        },
+        {
+          "field": "severity_id",
+          "type": "integer",
+          "description": "OCSF severity level.",
+          "values": {
+            "0": "Unknown",
+            "1": "Informational",
+            "2": "Low",
+            "3": "Medium",
+            "4": "High",
+            "5": "Critical",
+            "99": "Other"
+          }
+        },
+        {
+          "field": "severity",
+          "type": "string",
+          "description": "Human-readable severity.",
+          "example": "High"
+        },
+        {
+          "field": "status_id",
+          "type": "integer",
+          "description": "Event status.",
+          "values": {
+            "0": "Unknown",
+            "1": "Success",
+            "2": "Failure"
+          }
+        },
+        {
+          "field": "status",
+          "type": "string",
+          "description": "Human-readable status.",
+          "example": "Success"
+        },
+        {
+          "field": "time",
+          "type": "datetime",
+          "description": "Event occurrence time (maps to _time in DataLake).",
+          "example": "2024-06-15T14:32:01.000Z"
+        },
+        {
+          "field": "message",
+          "type": "string",
+          "description": "Human-readable event description.",
+          "example": "Process 'powershell.exe' was launched"
+        },
+        {
+          "field": "type_uid",
+          "type": "integer",
+          "description": "Composite type ID: class_uid * 100 + activity_id. Unique identifier for each activity type.",
+          "example": "400101"
+        },
+        {
+          "field": "metadata.version",
+          "type": "string",
+          "description": "OCSF schema version.",
+          "example": "1.0.0"
+        },
+        {
+          "field": "metadata.product.name",
+          "type": "string",
+          "description": "Source product name.",
+          "example": "CrowdStrike Falcon"
+        },
+        {
+          "field": "metadata.product.vendor_name",
+          "type": "string",
+          "description": "Source vendor.",
+          "example": "CrowdStrike"
+        },
+        {
+          "field": "metadata.profiles",
+          "type": "array<string>",
+          "description": "OCSF profiles applied to this event.",
+          "example": [
+            "security_control",
+            "cloud"
+          ]
+        },
+        {
+          "field": "observables",
+          "type": "array<object>",
+          "description": "Array of observable entities (IP, hash, domain, user) extracted from the event for threat intel correlation."
+        }
+      ],
+      "actor_object": {
+        "description": "Actor performing the action (user, process, service).",
+        "fields": [
+          {
+            "field": "actor.user.name",
+            "type": "string",
+            "description": "Username of the acting user.",
+            "example": "jsmith"
+          },
+          {
+            "field": "actor.user.uid",
+            "type": "string",
+            "description": "User unique identifier (SID, GUID, etc.).",
+            "example": "S-1-5-21-..."
+          },
+          {
+            "field": "actor.user.type_id",
+            "type": "integer",
+            "description": "User type.",
+            "values": {
+              "1": "User",
+              "2": "Admin",
+              "3": "System",
+              "4": "ServiceAccount"
+            }
+          },
+          {
+            "field": "actor.user.domain",
+            "type": "string",
+            "description": "User's domain.",
+            "example": "CORP"
+          },
+          {
+            "field": "actor.user.email_addr",
+            "type": "string",
+            "description": "User's email address.",
+            "example": "jsmith@corp.com"
+          },
+          {
+            "field": "actor.process.name",
+            "type": "string",
+            "description": "Process name of the acting process.",
+            "example": "powershell.exe"
+          },
+          {
+            "field": "actor.process.pid",
+            "type": "integer",
+            "description": "Process ID.",
+            "example": 4256
+          },
+          {
+            "field": "actor.process.file.path",
+            "type": "string",
+            "description": "Full path to process image.",
+            "example": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
+          },
+          {
+            "field": "actor.process.cmd_line",
+            "type": "string",
+            "description": "Full command line.",
+            "example": "powershell.exe -EncodedCommand SQBFAFGAYQ=="
+          },
+          {
+            "field": "actor.process.parent_process.name",
+            "type": "string",
+            "description": "Parent process name.",
+            "example": "winword.exe"
+          },
+          {
+            "field": "actor.process.parent_process.pid",
+            "type": "integer",
+            "description": "Parent process ID."
+          },
+          {
+            "field": "actor.session.uid",
+            "type": "string",
+            "description": "Session identifier.",
+            "example": "session-abc123"
+          }
+        ]
+      },
+      "network_object": {
+        "description": "Network connection details for network-related events.",
+        "fields": [
+          {
+            "field": "src_endpoint.ip",
+            "type": "string",
+            "description": "Source IP address.",
+            "example": "10.0.1.55"
+          },
+          {
+            "field": "src_endpoint.port",
+            "type": "integer",
+            "description": "Source port.",
+            "example": 54321
+          },
+          {
+            "field": "src_endpoint.hostname",
+            "type": "string",
+            "description": "Source hostname.",
+            "example": "WORKSTATION-001"
+          },
+          {
+            "field": "src_endpoint.domain",
+            "type": "string",
+            "description": "Source domain.",
+            "example": "corp.com"
+          },
+          {
+            "field": "dst_endpoint.ip",
+            "type": "string",
+            "description": "Destination IP address.",
+            "example": "203.0.113.45"
+          },
+          {
+            "field": "dst_endpoint.port",
+            "type": "integer",
+            "description": "Destination port.",
+            "example": 443
+          },
+          {
+            "field": "dst_endpoint.hostname",
+            "type": "string",
+            "description": "Destination hostname.",
+            "example": "evil-c2.net"
+          },
+          {
+            "field": "dst_endpoint.domain",
+            "type": "string",
+            "description": "Destination domain.",
+            "example": "evil-c2.net"
+          },
+          {
+            "field": "connection_info.protocol_id",
+            "type": "integer",
+            "description": "L4 protocol.",
+            "values": {
+              "6": "TCP",
+              "17": "UDP",
+              "1": "ICMP"
+            }
+          },
+          {
+            "field": "connection_info.protocol_name",
+            "type": "string",
+            "description": "Protocol name.",
+            "example": "TCP"
+          },
+          {
+            "field": "connection_info.direction_id",
+            "type": "integer",
+            "description": "Connection direction.",
+            "values": {
+              "0": "Unknown",
+              "1": "Inbound",
+              "2": "Outbound",
+              "3": "Lateral"
+            }
+          },
+          {
+            "field": "traffic.bytes_in",
+            "type": "long",
+            "description": "Inbound bytes.",
+            "example": 1024
+          },
+          {
+            "field": "traffic.bytes_out",
+            "type": "long",
+            "description": "Outbound bytes.",
+            "example": 5242880
+          },
+          {
+            "field": "traffic.packets_in",
+            "type": "long",
+            "description": "Inbound packet count."
+          },
+          {
+            "field": "traffic.packets_out",
+            "type": "long",
+            "description": "Outbound packet count."
+          }
+        ]
+      },
+      "file_object": {
+        "fields": [
+          {
+            "field": "file.name",
+            "type": "string",
+            "description": "Filename.",
+            "example": "invoice.xlsm"
+          },
+          {
+            "field": "file.path",
+            "type": "string",
+            "description": "Full file path.",
+            "example": "C:\\Users\\jsmith\\Downloads\\invoice.xlsm"
+          },
+          {
+            "field": "file.type",
+            "type": "string",
+            "description": "File type.",
+            "example": "Regular File"
+          },
+          {
+            "field": "file.size",
+            "type": "long",
+            "description": "File size in bytes."
+          },
+          {
+            "field": "file.hashes",
+            "type": "array<object>",
+            "description": "Array of hash objects {algorithm, value}.",
+            "example": "[{algorithm: 'SHA-256', value: 'abc123...'}]"
+          },
+          {
+            "field": "file.mime_type",
+            "type": "string",
+            "description": "MIME type.",
+            "example": "application/vnd.ms-excel.sheet.macroEnabled.12"
+          },
+          {
+            "field": "file.owner.name",
+            "type": "string",
+            "description": "File owner username."
+          },
+          {
+            "field": "file.created_time",
+            "type": "datetime",
+            "description": "File creation timestamp."
+          },
+          {
+            "field": "file.modified_time",
+            "type": "datetime",
+            "description": "Last modification timestamp."
+          }
+        ]
+      }
+    },
+    "ecs_normalized_schema": {
+      "description": "Elastic Common Schema (ECS) field reference for DataLake environments using ECS normalization.",
+      "core_fields": [
+        {
+          "field": "@timestamp",
+          "type": "datetime",
+          "description": "Event timestamp. Maps to _time in Cribl DataLake."
+        },
+        {
+          "field": "event.kind",
+          "type": "string",
+          "description": "Event categorization.",
+          "valid_values": [
+            "alert",
+            "event",
+            "metric",
+            "state",
+            "pipeline_error",
+            "signal"
+          ]
+        },
+        {
+          "field": "event.category",
+          "type": "array<string>",
+          "description": "Event category.",
+          "valid_values": [
+            "authentication",
+            "configuration",
+            "database",
+            "driver",
+            "email",
+            "file",
+            "host",
+            "iam",
+            "intrusion_detection",
+            "malware",
+            "network",
+            "package",
+            "process",
+            "registry",
+            "session",
+            "threat",
+            "vulnerability",
+            "web"
+          ]
+        },
+        {
+          "field": "event.type",
+          "type": "array<string>",
+          "description": "Event type.",
+          "valid_values": [
+            "access",
+            "admin",
+            "allowed",
+            "change",
+            "connection",
+            "creation",
+            "deletion",
+            "denied",
+            "end",
+            "error",
+            "exec",
+            "info",
+            "installation",
+            "protocol",
+            "start",
+            "user"
+          ]
+        },
+        {
+          "field": "event.outcome",
+          "type": "string",
+          "description": "Action outcome.",
+          "valid_values": [
+            "success",
+            "failure",
+            "unknown"
+          ]
+        },
+        {
+          "field": "event.action",
+          "type": "string",
+          "description": "The action described by the event.",
+          "example": "user-login"
+        },
+        {
+          "field": "event.dataset",
+          "type": "string",
+          "description": "Dataset name.",
+          "example": "windows.security"
+        },
+        {
+          "field": "event.module",
+          "type": "string",
+          "description": "Integration module.",
+          "example": "windows"
+        },
+        {
+          "field": "source.ip",
+          "type": "string",
+          "description": "Source IP address."
+        },
+        {
+          "field": "source.port",
+          "type": "integer",
+          "description": "Source port."
+        },
+        {
+          "field": "source.hostname",
+          "type": "string",
+          "description": "Source hostname."
+        },
+        {
+          "field": "source.domain",
+          "type": "string",
+          "description": "Source domain."
+        },
+        {
+          "field": "source.geo.country_name",
+          "type": "string",
+          "description": "GeoIP country name."
+        },
+        {
+          "field": "destination.ip",
+          "type": "string",
+          "description": "Destination IP address."
+        },
+        {
+          "field": "destination.port",
+          "type": "integer",
+          "description": "Destination port."
+        },
+        {
+          "field": "destination.hostname",
+          "type": "string",
+          "description": "Destination hostname."
+        },
+        {
+          "field": "user.name",
+          "type": "string",
+          "description": "Username."
+        },
+        {
+          "field": "user.domain",
+          "type": "string",
+          "description": "User's domain."
+        },
+        {
+          "field": "user.email",
+          "type": "string",
+          "description": "User's email address."
+        },
+        {
+          "field": "user.id",
+          "type": "string",
+          "description": "User identifier (UID/SID/GUID)."
+        },
+        {
+          "field": "process.name",
+          "type": "string",
+          "description": "Process name."
+        },
+        {
+          "field": "process.pid",
+          "type": "long",
+          "description": "Process ID."
+        },
+        {
+          "field": "process.executable",
+          "type": "string",
+          "description": "Full process path."
+        },
+        {
+          "field": "process.command_line",
+          "type": "string",
+          "description": "Full command line."
+        },
+        {
+          "field": "process.parent.name",
+          "type": "string",
+          "description": "Parent process name."
+        },
+        {
+          "field": "process.parent.pid",
+          "type": "long",
+          "description": "Parent process ID."
+        },
+        {
+          "field": "host.hostname",
+          "type": "string",
+          "description": "Hostname."
+        },
+        {
+          "field": "host.ip",
+          "type": "array<string>",
+          "description": "Host IP addresses."
+        },
+        {
+          "field": "host.os.name",
+          "type": "string",
+          "description": "OS name."
+        },
+        {
+          "field": "host.os.version",
+          "type": "string",
+          "description": "OS version."
+        },
+        {
+          "field": "file.name",
+          "type": "string",
+          "description": "Filename."
+        },
+        {
+          "field": "file.path",
+          "type": "string",
+          "description": "Full file path."
+        },
+        {
+          "field": "file.hash.sha256",
+          "type": "string",
+          "description": "SHA256 hash."
+        },
+        {
+          "field": "file.hash.md5",
+          "type": "string",
+          "description": "MD5 hash."
+        },
+        {
+          "field": "network.protocol",
+          "type": "string",
+          "description": "Network protocol name."
+        },
+        {
+          "field": "network.transport",
+          "type": "string",
+          "description": "Transport protocol (tcp, udp, etc.)"
+        },
+        {
+          "field": "network.bytes",
+          "type": "long",
+          "description": "Total bytes transferred."
+        },
+        {
+          "field": "url.full",
+          "type": "string",
+          "description": "Full URL."
+        },
+        {
+          "field": "url.domain",
+          "type": "string",
+          "description": "URL domain."
+        },
+        {
+          "field": "dns.question.name",
+          "type": "string",
+          "description": "DNS query name."
+        },
+        {
+          "field": "dns.resolved_ip",
+          "type": "array<string>",
+          "description": "DNS resolved IP addresses."
+        },
+        {
+          "field": "threat.indicator.type",
+          "type": "string",
+          "description": "IOC type."
+        },
+        {
+          "field": "threat.indicator.value",
+          "type": "string",
+          "description": "IOC value."
+        }
+      ]
+    }
+  },
+  "detection_engineering": {
+    "detection_patterns": {
+      "powershell_encoded_command": {
+        "description": "Detection of PowerShell executing base64-encoded commands \u2014 primary obfuscation technique for malware loaders and post-exploitation.",
+        "index": "endpoint",
+        "sourcetype_scope": [
+          "windows:sysmon",
+          "windows:security",
+          "crowdstrike:event"
+        ],
+        "kql": "endpoint\n| where _time > ago(24h)\n| where sourcetype in ('windows:sysmon', 'windows:security')\n| where EventID in (4688, 1)\n| where isnotempty(CommandLine)\n| where CommandLine matches regex @'(?i)(powershell|pwsh).*(-e(n(c(o(d(e(d(c(o(m(m(a(n(d)?)?)?)?)?)?)?)?)?)?)?)?)?\\s+[A-Za-z0-9+/]{20,}[=]{0,2})'\n| extend decoded_cmd=base64_decode_tostring(extract(@'(?i)-e(?:nc)?(?:odedcommand)?\\s+([A-Za-z0-9+/=]+)', 1, CommandLine))\n| project _time, host, ProcessName, CommandLine, decoded_cmd, ParentProcessName, user\n| order by _time desc",
+        "severity": "High",
+        "false_positive_note": "Software deployment tools (SCCM, PDQ, Ansible) and management scripts may use encoded commands. Build an allowlist of known-good parent processes."
+      },
+      "lateral_movement_pass_the_hash": {
+        "description": "Detection of Pass-the-Hash using NTLMv2 logon with network logon type from an unusual source.",
+        "index": "endpoint",
+        "kql": "endpoint\n| where _time > ago(1h)\n| where EventID == 4624\n| where LogonType == 3\n| where AuthenticationPackageName == 'NTLM'\n| where not(ipv4_is_private(IpAddress) == false)\n| where IpAddress !in ('127.0.0.1', '::1', '-')\n| summarize \n    attempt_count=count(),\n    target_hosts=make_set(host, 50),\n    target_usernames=make_set(TargetUserName, 20)\n  by IpAddress, bin(_time, 15m)\n| where attempt_count > 5 and array_length(target_hosts) > 2\n| order by attempt_count desc",
+        "severity": "High",
+        "notes": "Tune attempt_count and target_hosts thresholds based on environment. Known scanners and monitoring tools may require exclusion."
+      },
+      "impossible_travel_auth": {
+        "description": "User authenticates from two geographically distant locations within a physically impossible timeframe.",
+        "index": "auth",
+        "kql": "let time_window = 2h;\nlet speed_kmh = 800.0; // Max plausible travel speed (commercial flight)\nauth\n| where _time > ago(24h)\n| where outcome == 'success'\n| where isnotempty(src_ip)\n| extend geo = geo_info_from_ip_address(src_ip)\n| extend country = tostring(geo['country']), lat = todouble(geo['latitude']), lon = todouble(geo['longitude'])\n| where isnotempty(country)\n| summarize \n    countries=make_set(country),\n    ips=make_set(src_ip),\n    times=make_list(_time, 10)\n  by user, bin(_time, time_window)\n| where array_length(countries) > 1\n| project _time, user, countries, ips, times\n| order by _time desc",
+        "severity": "High",
+        "notes": "Full distance calculation requires geo coordinates from both events. This pattern detects multi-country logins in a window \u2014 add coordinate-based haversine distance calculation for precise impossible travel."
+      },
+      "dns_c2_beaconing": {
+        "description": "DNS beaconing detection \u2014 high-frequency, low-TTL DNS queries to the same domain indicating C2 communication.",
+        "index": "network",
+        "kql": "network\n| where _time > ago(1h)\n| where sourcetype == 'dns'\n| where isnotempty(dns_query)\n| where not(ipv4_is_private(src_ip))\n| summarize\n    query_count=count(),\n    unique_subdomains=dcount(dns_query),\n    avg_query_interval_sec=tolong((max(_time) - min(_time)) / 1s) / count()\n  by src_ip, tld=extract(@'([^.]+\\.[^.]+)$', 1, dns_query), bin(_time, 1h)\n| where query_count > 100 and unique_subdomains > 50\n| order by query_count desc",
+        "severity": "Medium",
+        "notes": "High unique subdomains to same TLD indicates DNS tunneling or DGA C2. Tune thresholds based on baseline DNS volume."
+      },
+      "data_exfiltration_large_upload": {
+        "description": "Large outbound data transfer to external IP \u2014 potential data exfiltration.",
+        "index": "network",
+        "kql": "network\n| where _time > ago(24h)\n| where connection_direction in ('outbound', 'egress')\n| where not(ipv4_is_private(dst_ip))\n| summarize\n    total_bytes_out=sum(tolong(bytes_out)),\n    connection_count=count(),\n    unique_dst_ips=dcount(dst_ip)\n  by src_ip, src_host=host, bin(_time, 1h)\n| where total_bytes_out > 500000000 // 500MB threshold\n| extend gb_out=round(total_bytes_out / 1073741824.0, 2)\n| order by total_bytes_out desc",
+        "severity": "High",
+        "threshold_guidance": "Adjust 500MB threshold based on baseline outbound transfer volumes. Cloud backup and CDN traffic may require exclusion."
+      },
+      "brute_force_then_success": {
+        "description": "Brute force attack followed by successful authentication \u2014 credential compromise indicator.",
+        "index": "auth",
+        "kql": "let brute_force_ips =\n    auth\n    | where _time > ago(1h)\n    | where outcome == 'failure'\n    | summarize failure_count=count() by src_ip, user\n    | where failure_count > 10;\nauth\n| where _time > ago(1h)\n| where outcome == 'success'\n| join kind=inner (brute_force_ips) on src_ip, user\n| project _time, user, src_ip, failure_count, outcome\n| order by _time desc",
+        "severity": "Critical",
+        "notes": "The join correlates failed and successful logins from the same src_ip + user combination. Adjust failure_count threshold based on authentication baseline."
+      },
+      "process_injection_techniques": {
+        "description": "Detection of common process injection indicators via Sysmon Event ID 8 (CreateRemoteThread) and Event ID 10 (ProcessAccess).",
+        "index": "endpoint",
+        "kql": "endpoint\n| where _time > ago(1h)\n| where EventID in (8, 10)\n| where isnotempty(TargetImage)\n| where TargetImage contains 'lsass.exe'\n    or (EventID == 8 and SourceImage !contains 'C:\\\\Windows\\\\System32')\n    or (EventID == 10 and GrantedAccess in ('0x1010', '0x1410', '0x147a', '0x143a', '0x1438', '0x1418'))\n| project _time, host, EventID, SourceImage, TargetImage, GrantedAccess, user\n| order by _time desc",
+        "severity": "Critical",
+        "notes": "lsass access is a strong indicator of credential dumping. GrantedAccess values listed are associated with LSASS memory read access."
+      },
+      "new_scheduled_task_persistence": {
+        "description": "New scheduled task created \u2014 common persistence mechanism.",
+        "index": "endpoint",
+        "kql": "endpoint\n| where _time > ago(24h)\n| where EventID in (4698, 4702) // Task created, task updated\n| where isnotempty(TaskName)\n| where not(TaskName startswith '\\\\Microsoft')\n    and not(TaskName startswith '\\\\Adobe')\n    and not(TaskName startswith '\\\\GoogleUpdate')\n| extend task_action = extract(@'<Command>(.*?)</Command>', 1, TaskContent)\n| project _time, host, EventID, TaskName, TaskContent, task_action, SubjectUserName, SubjectDomainName\n| order by _time desc",
+        "severity": "Medium",
+        "notes": "Exclude known legitimate scheduled tasks. The task_action extraction from TaskContent XML requires the Windows Security event to include TaskContent \u2014 verify field population in your environment."
+      },
+      "privileged_account_creation": {
+        "description": "New account added to privileged groups (Domain Admins, Enterprise Admins, Administrators).",
+        "index": "auth",
+        "kql": "let privileged_groups = dynamic(['Domain Admins', 'Enterprise Admins', 'Administrators', 'Schema Admins', 'Account Operators', 'Backup Operators', 'Print Operators']);\nauth\n| where _time > ago(24h)\n| where EventID in (4728, 4732, 4756) // Global, local, universal group member added\n| extend group_name = tostring(TargetUserName)\n| where group_name in~ (privileged_groups)\n| project _time, host, EventID, group_name, MemberName=SubjectUserName, AddedBy=SubjectUserName, SubjectDomainName\n| order by _time desc",
+        "severity": "Critical",
+        "notes": "in~ is case-insensitive comparison. Always alert on privileged group additions."
+      },
+      "golden_ticket_indicators": {
+        "description": "Kerberos golden ticket indicators \u2014 ticket with anomalous lifetime or from unexpected source.",
+        "index": "auth",
+        "kql": "auth\n| where _time > ago(1h)\n| where EventID == 4769\n| where TicketEncryptionType == '0x17' // RC4 \u2014 unexpected in modern environments using AES\n| where ServiceName !endswith '$'\n| where not(ClientAddress in ('::1', '127.0.0.1'))\n| where isnotempty(TicketOptions)\n| summarize\n    count_per_user=count(),\n    unique_services=dcount(ServiceName)\n  by TargetUserName, ClientAddress, bin(_time, 15m)\n| where count_per_user > 20 and unique_services > 5\n| order by count_per_user desc",
+        "severity": "Critical",
+        "notes": "RC4 encryption (0x17) is a golden ticket indicator in AES-enforced environments. High ticket volume + unique services from one source = PTT indicator."
+      },
+      "suspicious_parent_child_process": {
+        "description": "Suspicious parent-child process relationships \u2014 office apps spawning shells, LOLBins executed from unexpected parents.",
+        "index": "endpoint",
+        "kql": "let suspicious_pairs = dynamic([\n    dynamic({'parent': 'winword.exe', 'child': 'cmd.exe'}),\n    dynamic({'parent': 'winword.exe', 'child': 'powershell.exe'}),\n    dynamic({'parent': 'excel.exe', 'child': 'cmd.exe'}),\n    dynamic({'parent': 'outlook.exe', 'child': 'powershell.exe'}),\n    dynamic({'parent': 'mshta.exe', 'child': 'cmd.exe'}),\n    dynamic({'parent': 'wscript.exe', 'child': 'powershell.exe'}),\n    dynamic({'parent': 'cscript.exe', 'child': 'powershell.exe'})\n]);\nendpoint\n| where _time > ago(1h)\n| where EventID in (4688, 1)\n| extend parent_lower = tolower(extract(@'([^\\\\]+)$', 1, ParentProcessName))\n| extend child_lower = tolower(extract(@'([^\\\\]+)$', 1, NewProcessName))\n| where (parent_lower == 'winword.exe' and child_lower in ('cmd.exe', 'powershell.exe', 'wscript.exe', 'cscript.exe', 'mshta.exe', 'regsvr32.exe', 'rundll32.exe', 'certutil.exe', 'bitsadmin.exe'))\n    or (parent_lower in ('excel.exe', 'powerpnt.exe') and child_lower in ('cmd.exe', 'powershell.exe', 'wscript.exe', 'cscript.exe'))\n    or (parent_lower == 'outlook.exe' and child_lower in ('powershell.exe', 'cmd.exe', 'wscript.exe'))\n| project _time, host, user, ParentProcessName, NewProcessName, CommandLine, ProcessId, ParentProcessId\n| order by _time desc",
+        "severity": "High"
+      },
+      "dga_domain_detection": {
+        "description": "Detection of likely DGA (Domain Generation Algorithm) domains in DNS queries using entropy and string characteristics.",
+        "index": "network",
+        "kql": "network\n| where _time > ago(1h)\n| where sourcetype == 'dns'\n| where dns_type == 'query'\n| extend domain_parts = split(dns_query, '.')\n| extend subdomain = tostring(domain_parts[0])\n| where strlen(subdomain) > 10\n| extend\n    digit_count = strlen(replace(@'[^0-9]', '', subdomain)),\n    alpha_count = strlen(replace(@'[^a-zA-Z]', '', subdomain)),\n    subdomain_len = strlen(subdomain)\n| extend digit_ratio = todouble(digit_count) / todouble(subdomain_len)\n| where digit_ratio > 0.3 and subdomain_len > 12\n| summarize \n    query_count=count(),\n    unique_ips=dcount(src_ip)\n  by dns_query, subdomain\n| where query_count > 5\n| order by query_count desc",
+        "severity": "Medium",
+        "notes": "Digit ratio > 0.3 and long subdomain length are heuristic DGA indicators. Combine with threat intel lookup for higher fidelity."
+      },
+      "cloud_privilege_escalation": {
+        "description": "Cloud IAM privilege escalation \u2014 policy attachment to user or role that grants admin-equivalent permissions.",
+        "index": "cloud",
+        "kql": "cloud\n| where _time > ago(24h)\n| where sourcetype in ('aws:cloudtrail', 'azure:activity', 'gcp:audit')\n| where EventName in ('AttachUserPolicy', 'AttachRolePolicy', 'PutUserPolicy', 'CreateLoginProfile', 'UpdateLoginProfile', 'AddUserToGroup')\n    or (sourcetype == 'azure:activity' and operationName contains 'roleAssignments/write')\n    or (sourcetype == 'gcp:audit' and methodName in ('SetIamPolicy', 'google.iam.admin.v1.CreateRole'))\n| where isnotempty(actor_user)\n| project _time, host, sourcetype, EventName, actor_user, target_resource, src_ip, aws_region=coalesce(region, awsRegion)\n| order by _time desc",
+        "severity": "High"
+      }
+    },
+    "let_statement_library": {
+      "description": "Reusable KQL let statements for common detection engineering patterns in Cribl DataLake.",
+      "definitions": [
+        {
+          "name": "private_ip_ranges",
+          "definition": "let private_ip_ranges = dynamic(['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '127.0.0.0/8', '169.254.0.0/16', '::1', 'fc00::/7']);",
+          "usage": "| where not(ipv4_is_in_range(src_ip, '10.0.0.0/8') or ipv4_is_in_range(src_ip, '172.16.0.0/12') or ipv4_is_in_range(src_ip, '192.168.0.0/16'))"
+        },
+        {
+          "name": "privileged_groups",
+          "definition": "let privileged_groups = dynamic(['Domain Admins', 'Enterprise Admins', 'Schema Admins', 'Administrators', 'Account Operators', 'Backup Operators', 'Print Operators', 'Server Operators']);",
+          "usage": "| where group_name in~ (privileged_groups)"
+        },
+        {
+          "name": "lolbins",
+          "definition": "let lolbins = dynamic(['certutil.exe', 'bitsadmin.exe', 'mshta.exe', 'regsvr32.exe', 'rundll32.exe', 'wscript.exe', 'cscript.exe', 'msiexec.exe', 'installutil.exe', 'regasm.exe', 'regsvcs.exe', 'msconfig.exe', 'xwizard.exe', 'presentationhost.exe', 'ieexec.exe', 'infdefaultinstall.exe']);",
+          "usage": "| where tolower(ProcessName) in (lolbins)"
+        },
+        {
+          "name": "suspicious_extensions",
+          "definition": "let suspicious_extensions = dynamic(['.exe', '.dll', '.ps1', '.vbs', '.js', '.hta', '.bat', '.cmd', '.scr', '.pif', '.com', '.lnk', '.iso', '.img', '.vhd', '.one']);",
+          "usage": "| where tolower(extract(@'(\\.[^.]+)$', 1, filename)) in (suspicious_extensions)"
+        },
+        {
+          "name": "off_hours_filter",
+          "definition": "let off_hours = (t:datetime) { hourofday(t) < 7 or hourofday(t) > 19 or dayofweek(t) == 0h or dayofweek(t) == 6d * 24h };",
+          "usage": "| where off_hours(_time)"
+        },
+        {
+          "name": "time_window",
+          "definition": "let detection_window = 1h;",
+          "usage": "| where _time > ago(detection_window)"
+        }
+      ]
+    },
+    "tuning_guidelines": {
+      "false_positive_reduction": [
+        "Build exclusion let statements for known management IPs, service accounts, and automation tooling.",
+        "Use sourcetype filters to scope rules to specific data sources \u2014 avoid cross-sourcetype rules without explicit type checks.",
+        "Implement allowlist lookup tables in DataLake for known-good hashes, domains, and processes.",
+        "For threshold-based rules, run aggregate queries against 30-day historical data to validate thresholds against actual baseline.",
+        "Use arg_max(_time, *) by user to get the most recent context for a user before alerting.",
+        "Add | where host !in (allowlisted_hosts) using let-defined allowlists for maintenance windows.",
+        "For process-based rules, normalize process names with tolower() and extract() to remove path \u2014 match on filename only.",
+        "Use group_by context in summarize to ensure alert deduplication at the right scope (per-user, per-host, per-IP)."
+      ],
+      "false_negative_reduction": [
+        "Account for schema-on-read field name variability \u2014 use coalesce() to handle multiple potential field names: coalesce(src_ip, source_ip, client_ip, ClientIPAddress).",
+        "Use type coercion (toint, tostring) to handle events where the same field arrives with different types.",
+        "Cover both Event ID 4688 (Windows native) and Sysmon Event ID 1 (process creation) for process-based rules.",
+        "Include multiple sourcetype variants for cross-platform coverage (windows:security, sysmon, crowdstrike, defender).",
+        "Test detection rules against historical known-bad events (if available) before deployment.",
+        "Validate that required fields are actually populated for your data sources \u2014 use summarize count() by isnotempty(fieldname) to check field population rates.",
+        "Account for Cribl Stream sampling \u2014 if events are sampled at 1:10, threshold-based rules need thresholds divided by 10."
+      ],
+      "kql_performance_optimization": [
+        "ALWAYS place the most selective time filter first: | where _time > ago(1h) before any other filter.",
+        "Filter on partition-aligned fields immediately after time: | where index == 'endpoint' (if using union).",
+        "Use project early to reduce column count carried through joins and summarize.",
+        "Replace large OR chains with has_any() or in() operators: EventID in (4688, 4624, 4625) not EventID == 4688 or EventID == 4624 or EventID == 4625.",
+        "Pre-filter before joins: both left and right tables should be filtered as narrowly as possible before join.",
+        "Use make_set() instead of make_list() when duplicate values are not meaningful \u2014 set construction is more efficient.",
+        "Prefer dcount() over count(distinct x) for high-cardinality approximate counting.",
+        "Use bin() for time-series aggregation rather than format_datetime() + group by.",
+        "Avoid | search in detection rules \u2014 use explicit field predicates.",
+        "Test with limit before removing it in production: run | limit 100 during development, remove or raise in production rules.",
+        "Use let statements for subqueries that are referenced multiple times within a single query to avoid redundant computation."
+      ]
+    },
+    "testing_and_validation": {
+      "pre_deployment_checklist": [
+        "Run query against 24h historical data in Cribl Search UI and validate result set makes sense.",
+        "Verify all referenced fields are present and non-null in sample data using: | summarize count() by isnotempty(field_name).",
+        "Test with KNOWN GOOD events to confirm rule does not fire on legitimate activity.",
+        "Test with KNOWN BAD events (historical or simulated) to confirm rule fires correctly.",
+        "Check estimated daily alert volume \u2014 use a 7-day window and divide by 7.",
+        "Validate time filter includes _time in the first where clause for partition pushdown.",
+        "Test null handling: run rule after adding | where isnotnull(critical_field) to see if result set changes significantly.",
+        "Validate join cardinality: check row counts on both sides of joins before enabling production rule.",
+        "Run query performance test: submit query and check execution time \u2014 target < 30 seconds for scheduled rules.",
+        "Validate field type assumptions: run | summarize count() by gettype(field_name) to confirm type expectations.",
+        "Document MITRE ATT&CK mapping, data sources, and false positive exclusion rationale in rule metadata.",
+        "Test regex patterns with both positive and negative examples using: | extend test=matches regex(CommandLine, 'pattern') | summarize count() by test."
+      ],
+      "validation_queries": {
+        "field_population_audit": "endpoint\n| where _time > ago(24h)\n| summarize\n    total_events=count(),\n    has_commandline=countif(isnotempty(CommandLine)),\n    has_user=countif(isnotempty(user)),\n    has_src_ip=countif(isnotempty(src_ip)),\n    has_process=countif(isnotempty(ProcessName))\n| extend\n    pct_commandline=round(100.0 * has_commandline / total_events, 1),\n    pct_user=round(100.0 * has_user / total_events, 1)",
+        "sourcetype_coverage_check": "union auth, endpoint, network\n| where _time > ago(24h)\n| summarize event_count=count() by index, sourcetype\n| order by event_count desc",
+        "schema_drift_detection": "endpoint\n| where _time > ago(7d)\n| summarize count() by gettype(EventID), gettype(CommandLine), gettype(ProcessId)\n| where gettype_EventID != 'int64' or gettype_CommandLine != 'string'",
+        "event_id_distribution": "endpoint\n| where _time > ago(24h)\n| where isnotempty(EventID)\n| summarize count() by EventID\n| order by count_ desc\n| limit 50",
+        "ingestion_latency_check": "endpoint\n| where _time > ago(1h)\n| extend ingestion_lag_sec = tolong((_indextime - _time) / 1s)\n| summarize \n    avg_lag=avg(ingestion_lag_sec),\n    p95_lag=percentile(ingestion_lag_sec, 95),\n    max_lag=max(ingestion_lag_sec)\n  by sourcetype"
+      }
+    }
+  },
+  "output_formatting_standards": {
+    "normalized_alert_schema": {
+      "description": "Canonical output schema for detection rule results exported to SIEM, SOAR, or alerting systems from Cribl DataLake queries.",
+      "required_fields": [
+        {
+          "field": "alert_id",
+          "type": "string (UUID)",
+          "description": "Unique identifier for the alert instance. Generate with new_guid() in KQL: extend alert_id=new_guid()"
+        },
+        {
+          "field": "alert_time",
+          "type": "datetime (ISO 8601 UTC)",
+          "description": "Timestamp when the alert was generated."
+        },
+        {
+          "field": "event_time",
+          "type": "datetime (ISO 8601 UTC)",
+          "description": "Timestamp of the triggering event (_time)."
+        },
+        {
+          "field": "alert_title",
+          "type": "string",
+          "description": "Human-readable alert name."
+        },
+        {
+          "field": "alert_severity",
+          "type": "enum",
+          "description": "Severity level.",
+          "valid_values": [
+            "Critical",
+            "High",
+            "Medium",
+            "Low",
+            "Informational"
+          ]
+        },
+        {
+          "field": "alert_status",
+          "type": "enum",
+          "description": "Initial status.",
+          "valid_values": [
+            "Open",
+            "In Progress",
+            "Resolved",
+            "False Positive"
+          ]
+        },
+        {
+          "field": "detection_rule_id",
+          "type": "string",
+          "description": "Detection rule identifier.",
+          "example": "CRIBL-ENDPOINT-001"
+        },
+        {
+          "field": "mitre_tactic",
+          "type": "string",
+          "description": "MITRE ATT&CK tactic name."
+        },
+        {
+          "field": "mitre_technique",
+          "type": "string",
+          "description": "MITRE ATT&CK technique ID.",
+          "example": "T1059.001"
+        },
+        {
+          "field": "host",
+          "type": "string",
+          "description": "Affected host."
+        },
+        {
+          "field": "user",
+          "type": "string",
+          "description": "Affected or acting user."
+        },
+        {
+          "field": "src_ip",
+          "type": "string",
+          "description": "Source IP address."
+        },
+        {
+          "field": "index",
+          "type": "string",
+          "description": "DataLake index source."
+        },
+        {
+          "field": "sourcetype",
+          "type": "string",
+          "description": "Data source type."
+        },
+        {
+          "field": "evidence",
+          "type": "dynamic (JSON object)",
+          "description": "Key evidence fields for analyst investigation."
+        }
+      ],
+      "example_alert_output": {
+        "alert_id": "3f4e5d6c-7b8a-9012-cdef-1234567890ab",
+        "alert_time": "2024-06-15T14:35:00.000Z",
+        "event_time": "2024-06-15T14:32:01.000Z",
+        "alert_title": "PowerShell Encoded Command Execution",
+        "alert_severity": "High",
+        "alert_status": "Open",
+        "detection_rule_id": "CRIBL-ENDPOINT-003",
+        "detection_rule_name": "PowerShell Base64 Encoded Command Execution",
+        "mitre_tactic": "Execution",
+        "mitre_technique": "T1059.001",
+        "host": "WORKSTATION-042.corp.com",
+        "user": "jsmith",
+        "src_ip": null,
+        "index": "endpoint",
+        "sourcetype": "windows:sysmon",
+        "evidence": {
+          "EventID": 1,
+          "ProcessName": "powershell.exe",
+          "CommandLine": "powershell.exe -EncodedCommand SQBFAFGAYQA=",
+          "decoded_command": "IEX $payload",
+          "ParentProcessName": "winword.exe",
+          "ParentProcessId": 3944,
+          "ProcessId": 8872
+        }
+      }
+    },
+    "kql_output_template": {
+      "description": "Standard KQL result formatting for detection rules that output to alerting systems.",
+      "template": "// === ALERT OUTPUT TEMPLATE ===\n// Always use this structure for production detection rules\n<source_index>\n| where _time > ago(<window>)      // 1. Time filter FIRST\n| where <selective_filter>          // 2. Most selective field filter\n| where <additional_filters>        // 3. Additional predicates\n| summarize <aggregation> by <group_fields>  // 4. Aggregate where applicable\n| where <threshold_condition>       // 5. Having-equivalent for thresholds\n| extend                            // 6. Compute alert fields\n    alert_id=new_guid(),\n    alert_time=now(),\n    alert_title=\"<Rule Name>\",\n    alert_severity=\"<Severity>\",\n    mitre_technique=\"<T####.###>\",\n    evidence=pack(<key1>, <val1>, <key2>, <val2>)\n| project                           // 7. Select final output columns\n    alert_id, alert_time, event_time=_time,\n    alert_title, alert_severity, mitre_technique,\n    host, user, src_ip,\n    index, sourcetype, evidence\n| order by alert_time desc"
+    },
+    "siem_integration_formats": {
+      "splunk_hec_format": {
+        "description": "Cribl DataLake query results forwarded to Splunk via HTTP Event Collector.",
+        "required_fields": {
+          "time": "event_time (Unix epoch float)",
+          "host": "host",
+          "source": "detection_rule_id",
+          "sourcetype": "cribl:datalake:alert",
+          "index": "alerts",
+          "event": "{flattened alert fields JSON}"
+        }
+      },
+      "sentinel_format": {
+        "description": "Alert forwarding to Microsoft Sentinel via Log Analytics Workspace API.",
+        "table": "CriblDataLakeAlerts_CL",
+        "required_fields": {
+          "TimeGenerated": "alert_time",
+          "AlertTitle_s": "alert_title",
+          "AlertSeverity_s": "alert_severity",
+          "DetectionRuleId_s": "detection_rule_id",
+          "MitreTechnique_s": "mitre_technique",
+          "Host_s": "host",
+          "User_s": "user",
+          "SrcIp_s": "src_ip",
+          "Evidence_s": "tostring(evidence)",
+          "AlertId_g": "alert_id"
+        }
+      },
+      "elastic_ecs_format": {
+        "description": "Alert forwarding to Elasticsearch using ECS field mapping.",
+        "index_pattern": "cribl-alerts-*",
+        "field_mapping": {
+          "@timestamp": "alert_time",
+          "event.kind": "alert",
+          "event.category": [
+            "threat"
+          ],
+          "rule.name": "alert_title",
+          "rule.id": "detection_rule_id",
+          "kibana.alert.severity": "alert_severity (lowercase)",
+          "threat.technique.id": "mitre_technique",
+          "host.name": "host",
+          "user.name": "user",
+          "source.ip": "src_ip"
+        }
+      },
+      "pagerduty_webhook": {
+        "description": "Critical/High alerts forwarded to PagerDuty via webhook.",
+        "trigger_conditions": [
+          "alert_severity == 'Critical'",
+          "alert_severity == 'High' and mitre_technique startswith 'T1059'"
+        ],
+        "payload_fields": [
+          "alert_id",
+          "alert_title",
+          "alert_severity",
+          "host",
+          "user",
+          "evidence (serialized JSON)",
+          "detection_rule_id"
+        ]
+      }
+    },
+    "report_output_standards": {
+      "daily_threat_summary": {
+        "query_pattern": "union auth, endpoint, network, cloud\n| where _time > ago(24h)\n| where alert_severity in ('Critical', 'High')\n| summarize \n    alert_count=count(),\n    unique_hosts=dcount(host),\n    unique_users=dcount(user)\n  by alert_severity, mitre_tactic\n| order by alert_count desc",
+        "required_columns": [
+          "alert_severity",
+          "mitre_tactic",
+          "alert_count",
+          "unique_hosts",
+          "unique_users"
+        ]
+      },
+      "user_activity_risk_report": {
+        "query_pattern": "auth\n| where _time > ago(7d)\n| summarize\n    total_logins=count(),\n    failed_logins=countif(outcome == 'failure'),\n    unique_ips=dcount(src_ip),\n    unique_countries=dcount(geo_country)\n  by user\n| extend failure_rate=round(100.0 * failed_logins / total_logins, 1)\n| where failure_rate > 20 or unique_countries > 3\n| order by failure_rate desc",
+        "required_columns": [
+          "user",
+          "total_logins",
+          "failed_logins",
+          "failure_rate",
+          "unique_ips",
+          "unique_countries"
+        ]
+      }
+    }
+  },
+  "mitre_attack_mapping": {
+    "description": "MITRE ATT&CK technique mappings to Cribl DataLake KQL detection patterns.",
+    "mappings": [
+      {
+        "technique_id": "T1059.001",
+        "technique": "Command and Scripting Interpreter: PowerShell",
+        "tactic": "Execution",
+        "data_sources": [
+          "endpoint (Sysmon EID 1, Windows Security EID 4688)",
+          "EDR telemetry"
+        ],
+        "kql_signals": [
+          "CommandLine matches regex encoded command pattern",
+          "strlen(CommandLine) > 1000",
+          "ParentProcess is Office app"
+        ],
+        "index": "endpoint"
+      },
+      {
+        "technique_id": "T1003.001",
+        "technique": "OS Credential Dumping: LSASS Memory",
+        "tactic": "Credential Access",
+        "data_sources": [
+          "endpoint (Sysmon EID 10 ProcessAccess)",
+          "EDR telemetry"
+        ],
+        "kql_signals": [
+          "TargetImage contains 'lsass.exe'",
+          "GrantedAccess in memory read values",
+          "SourceImage not in trusted list"
+        ],
+        "index": "endpoint"
+      },
+      {
+        "technique_id": "T1071.004",
+        "technique": "Application Layer Protocol: DNS",
+        "tactic": "Command and Control",
+        "data_sources": [
+          "network (DNS logs)"
+        ],
+        "kql_signals": [
+          "High frequency DNS queries to same TLD",
+          "High unique subdomain count",
+          "Long subdomain with high digit ratio"
+        ],
+        "index": "network"
+      },
+      {
+        "technique_id": "T1078",
+        "technique": "Valid Accounts",
+        "tactic": "Initial Access, Persistence",
+        "data_sources": [
+          "auth (Windows Security EID 4624, 4625, Okta, Azure AD)"
+        ],
+        "kql_signals": [
+          "Impossible travel",
+          "New country login",
+          "Brute force then success",
+          "Off-hours privileged access"
+        ],
+        "index": "auth"
+      },
+      {
+        "technique_id": "T1053.005",
+        "technique": "Scheduled Task/Job: Scheduled Task",
+        "tactic": "Persistence, Execution",
+        "data_sources": [
+          "endpoint (Windows Security EID 4698, 4702, Sysmon EID 1)"
+        ],
+        "kql_signals": [
+          "New non-Microsoft scheduled task creation",
+          "Task action points to suspicious binary or script"
+        ],
+        "index": "endpoint"
+      },
+      {
+        "technique_id": "T1484.001",
+        "technique": "Domain Policy Modification",
+        "tactic": "Defense Evasion, Privilege Escalation",
+        "data_sources": [
+          "auth (Windows Security EID 4728, 4732, 4756)"
+        ],
+        "kql_signals": [
+          "Addition to privileged groups",
+          "Actor is not in authorized admin set"
+        ],
+        "index": "auth"
+      },
+      {
+        "technique_id": "T1548.005",
+        "technique": "Abuse Elevation Control Mechanism: Temporary Elevated Cloud Access",
+        "tactic": "Privilege Escalation",
+        "data_sources": [
+          "cloud (AWS CloudTrail, Azure Activity, GCP Audit)"
+        ],
+        "kql_signals": [
+          "IAM policy attachment",
+          "Role assignment write",
+          "Admin policy attachment to non-service user"
+        ],
+        "index": "cloud"
+      },
+      {
+        "technique_id": "T1041",
+        "technique": "Exfiltration Over C2 Channel",
+        "tactic": "Exfiltration",
+        "data_sources": [
+          "network (firewall, proxy, NetFlow)"
+        ],
+        "kql_signals": [
+          "Large outbound bytes to external IP",
+          "Unusual destination port",
+          "Long connection duration with high data volume"
+        ],
+        "index": "network"
+      },
+      {
+        "technique_id": "T1055",
+        "technique": "Process Injection",
+        "tactic": "Defense Evasion, Privilege Escalation",
+        "data_sources": [
+          "endpoint (Sysmon EID 8 CreateRemoteThread, EID 10 ProcessAccess)"
+        ],
+        "kql_signals": [
+          "Remote thread creation to sensitive process",
+          "LSASS access with read memory rights",
+          "Unusual source process injecting into system process"
+        ],
+        "index": "endpoint"
+      },
+      {
+        "technique_id": "T1047",
+        "technique": "Windows Management Instrumentation",
+        "tactic": "Execution",
+        "data_sources": [
+          "endpoint (Windows Security EID 4688, Sysmon EID 1, WMI logs)"
+        ],
+        "kql_signals": [
+          "wmic.exe or wmiprvse.exe spawning shell",
+          "WMI subscription creation",
+          "wmic /node: remote execution"
+        ],
+        "index": "endpoint"
+      }
+    ]
+  },
+  "reference_quick_cards": {
+    "kql_performance_checklist": [
+      "1. _time filter FIRST \u2014 always | where _time > ago(Xh)",
+      "2. Most selective field filter SECOND \u2014 EventID, sourcetype, or action",
+      "3. Use 'in' not OR chains \u2014 EventID in (4624, 4625) not EventID == 4624 or EventID == 4625",
+      "4. project early \u2014 reduce columns before join and summarize",
+      "5. Pre-filter BOTH sides of join before the join operator",
+      "6. Use has_any() for multi-value keyword matching against same field",
+      "7. Pre-filter before regex \u2014 use contains/startswith then matches regex",
+      "8. Use dcount() not count(distinct) for approximate cardinality",
+      "9. Prefer make_set() over make_list() for distinct value aggregation",
+      "10. Use bin() for time-series, not format_datetime() grouping"
+    ],
+    "null_safe_patterns": {
+      "string_check": "isnotempty(field) \u2014 not field != '' or field != null",
+      "value_check": "isnotnull(field) \u2014 not field != null",
+      "comparison_safe": "coalesce(field, 'default') == 'value'",
+      "not_equal_with_null": "field != 'value' or isnull(field) \u2014 includes null rows",
+      "json_access": "tostring(parse_json(field)['key']) \u2014 always wrap in tostring()"
+    },
+    "operator_quick_reference": {
+      "case_insensitive_equals": "field =~ 'value'",
+      "case_insensitive_not_equal": "field !~ 'value'",
+      "substring_ci": "field contains 'value' (case-insensitive by default in Cribl KQL)",
+      "whole_word_match": "field has 'word'",
+      "multi_value_match": "field in ('v1', 'v2', 'v3')",
+      "multi_value_has_any": "field has_any (dynamic(['v1','v2','v3']))",
+      "regex_match": "field matches regex @'pattern'",
+      "prefix_match": "field startswith 'prefix'",
+      "suffix_match": "field endswith '.exe'",
+      "cidr_match": "ipv4_is_in_range(src_ip, '10.0.0.0/8')",
+      "private_ip_check": "ipv4_is_private(src_ip)",
+      "null_check": "isnull(field) or isnotnull(field)",
+      "empty_string_check": "isempty(field) or isnotempty(field)",
+      "time_ago": "_time > ago(1h)",
+      "time_between": "_time between (ago(7d) .. ago(1d))",
+      "off_hours": "datetime_part('hour', _time) < 7 or datetime_part('hour', _time) > 19"
+    },
+    "common_parse_patterns": {
+      "extract_domain_from_fqdn": "extract(@'([^.]+\\.[^.]+)$', 1, hostname)",
+      "extract_filename_from_path": "extract(@'([^\\\\]+)$', 1, file_path) or tostring(parse_path(file_path)['Filename'])",
+      "extract_file_extension": "tostring(parse_path(file_path)['Extension'])",
+      "extract_url_host": "tostring(parse_url(url)['Host'])",
+      "decode_base64": "base64_decode_tostring(b64_string)",
+      "parse_json_field": "tostring(parse_json(json_field)['key'])",
+      "split_email_domain": "tostring(split(email, '@')[1])",
+      "extract_ip_from_string": "extract(@'(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})', 1, log_line)",
+      "compute_file_entropy": "// Not native in KQL \u2014 pre-compute in Cribl Stream pipeline"
+    }
+  }
+}

@@ -1,0 +1,2290 @@
+{
+  "metadata": {
+    "title": "Proofpoint Email Security Detection Engineering Knowledge Base",
+    "version": "2.0",
+    "purpose": "Comprehensive reference for detection engineering, SIEM rule development, testing, and validation of Proofpoint Email Security telemetry. Covers Proofpoint Enterprise Protection (PPS), Targeted Attack Protection (TAP), Email Fraud Defense (EFD), P1/P2 message metadata, click telemetry, threat intelligence, and SIEM integration standards.",
+    "last_updated": "2025-02",
+    "maintainer": "Detection Engineering Team",
+    "product_scope": [
+      "Proofpoint Protection Server (PPS) \u2014 on-premises and hosted",
+      "Proofpoint Targeted Attack Protection (TAP)",
+      "Proofpoint Email Fraud Defense (EFD) / DMARC",
+      "Proofpoint TAP Attack Index",
+      "Proofpoint Threat Response Auto-Pull (TRAP)",
+      "Proofpoint Security Awareness Training (PSAT)",
+      "Proofpoint SIEM Integration (Syslog, TAP SIEM API, ETD API)"
+    ],
+    "tags": [
+      "proofpoint",
+      "email-security",
+      "tap",
+      "detection-engineering",
+      "siem",
+      "phishing",
+      "malware",
+      "bec",
+      "dmarc",
+      "knowledge-base"
+    ],
+    "schema_version": "1.0",
+    "kb_updated_at": "2025-01-01"
+  },
+  "platform_architecture": {
+    "overview": {
+      "description": "Proofpoint Email Security is an enterprise-grade, cloud-delivered and on-premises email security platform that provides multi-layered protection against phishing, malware, business email compromise (BEC), spam, and data loss. It operates as an MTA (Mail Transfer Agent) proxy in the email delivery path, inspecting all inbound and outbound messages before delivery. Threat telemetry is surfaced via syslog exports, the TAP SIEM API, and the Proofpoint on Demand (PoD) API \u2014 the primary data sources for SIEM-based detection engineering.",
+      "deployment_models": [
+        {
+          "model": "Proofpoint on Demand (PoD)",
+          "description": "Fully cloud-hosted managed service. All filtering occurs in Proofpoint's cloud infrastructure. MX records point to Proofpoint cloud. Telemetry available via TAP SIEM API and PoD log API.",
+          "telemetry_sources": [
+            "TAP SIEM API (/v2/siem/all)",
+            "PoD Log API",
+            "TAP Dashboard API",
+            "Syslog push to SIEM"
+          ]
+        },
+        {
+          "model": "Proofpoint Protection Server (PPS) \u2014 On-Premises",
+          "description": "Proofpoint appliance or VM deployed in customer data center. MX records point to PPS appliance. Telemetry exported via syslog to SIEM. TAP (URL/Attachment defense) runs as a cloud service even in on-prem deployments.",
+          "telemetry_sources": [
+            "Syslog (maillog, pffilter, pfsyslogd)",
+            "PPS Management Interface API",
+            "TAP SIEM API"
+          ]
+        },
+        {
+          "model": "Proofpoint Essentials",
+          "description": "Mid-market cloud email security. Reduced telemetry compared to Enterprise. Not covered in this knowledge base.",
+          "note": "This knowledge base focuses on Enterprise (PPS/PoD) telemetry."
+        }
+      ]
+    },
+    "core_components": {
+      "mta_layer": {
+        "description": "Proofpoint's core SMTP-level Mail Transfer Agent. Receives all inbound/outbound mail. Applies connection-level reputation filtering, sender authentication checks, and passes messages to the filtering engine.",
+        "functions": [
+          "SMTP connection acceptance/rejection",
+          "IP reputation blocking (Proofpoint Nexus IP Reputation, Spamhaus, custom blocklists)",
+          "SPF, DKIM, DMARC authentication enforcement",
+          "TLS enforcement and negotiation logging",
+          "Routing and delivery to downstream MTA or O365/Google Workspace"
+        ],
+        "log_sources": [
+          "maillog (PPS syslog)",
+          "connection_log",
+          "PoD delivery log"
+        ]
+      },
+      "email_filtering_engine": {
+        "description": "Multi-engine content inspection pipeline. Evaluates message headers, body, attachments, and URLs against ML models, reputation databases, and policy rules.",
+        "filtering_modules": [
+          {
+            "module": "Spam/Bulk Engine",
+            "description": "ML + signature-based spam scoring. Produces spam_score (0\u2013100).",
+            "dispositions": [
+              "deliver",
+              "quarantine",
+              "discard",
+              "tag"
+            ]
+          },
+          {
+            "module": "Virus/Malware Scanner",
+            "description": "Multi-AV scanning of attachments using Proofpoint's proprietary engine plus third-party AV engines.",
+            "dispositions": [
+              "block",
+              "quarantine",
+              "strip_attachment"
+            ]
+          },
+          {
+            "module": "URL Defense (Threat Actor Protection \u2014 URL)",
+            "description": "All URLs in email body are rewritten to pass through Proofpoint's click-time proxy. At click time, the URL is evaluated for malicious content.",
+            "dispositions": [
+              "allow",
+              "block",
+              "sandbox",
+              "alert"
+            ]
+          },
+          {
+            "module": "Attachment Defense (TAP Sandbox)",
+            "description": "Suspicious attachments are submitted to Proofpoint's cloud sandbox for dynamic and static analysis. Results can be async \u2014 messages may be delivered before sandbox verdict arrives.",
+            "verdict_types": [
+              "clean",
+              "malicious",
+              "suspicious",
+              "unknown"
+            ],
+            "file_types_sandboxed": [
+              "PDF",
+              "Office (doc, docx, xls, xlsx, ppt)",
+              "ZIP",
+              "RAR",
+              "JS",
+              "VBS",
+              "EXE",
+              "DLL",
+              "LNK",
+              "ISO",
+              "IMG",
+              "OneNote"
+            ]
+          },
+          {
+            "module": "Impostor Detection (BEC Engine)",
+            "description": "ML-based detection of business email compromise. Analyzes display name spoofing, domain lookalikes, header anomalies, and request patterns typical of BEC.",
+            "dispositions": [
+              "quarantine",
+              "tag",
+              "deliver"
+            ]
+          },
+          {
+            "module": "Email Fraud Defense (DMARC)",
+            "description": "DMARC authentication alignment and reporting. Aggregates DMARC signals from sending sources.",
+            "auth_results": [
+              "pass",
+              "fail",
+              "none",
+              "quarantine",
+              "reject"
+            ]
+          },
+          {
+            "module": "Data Loss Prevention (DLP)",
+            "description": "Content inspection for sensitive data in outbound email (PII, PHI, PCI, custom patterns).",
+            "dispositions": [
+              "encrypt",
+              "block",
+              "quarantine",
+              "notify"
+            ]
+          },
+          {
+            "module": "Threat Intelligence (Nexus)",
+            "description": "Proofpoint's threat intelligence platform. Provides actor attribution, malware family identification, campaign correlation, and attack index scores.",
+            "threat_categories": [
+              "APT",
+              "Crimeware",
+              "Ransomware",
+              "Phishing",
+              "BEC",
+              "Spam"
+            ]
+          }
+        ]
+      },
+      "targeted_attack_protection": {
+        "description": "TAP is Proofpoint's advanced threat detection layer for email-delivered targeted attacks. It consists of URL Defense (click-time URL analysis) and Attachment Defense (sandbox). TAP generates the richest threat telemetry for SIEM detection use cases.",
+        "tap_components": [
+          {
+            "component": "URL Defense",
+            "description": "Rewrites all URLs in delivered messages. At click time, evaluates destination in real-time. Blocked clicks generate click events with verdict details.",
+            "key_telemetry": [
+              "Click blocked events",
+              "Click permitted events",
+              "URL rewrite metadata"
+            ]
+          },
+          {
+            "component": "Attachment Defense",
+            "description": "Cloud sandbox for email attachments. Supports dynamic analysis (behavior observation in VM) and static analysis (structure, macros, scripts).",
+            "key_telemetry": [
+              "Sandbox verdicts",
+              "Threat names",
+              "Malware families",
+              "File hash (SHA256, MD5)"
+            ]
+          },
+          {
+            "component": "TAP Attack Index",
+            "description": "Per-user risk score (0\u20131000) based on the volume, severity, and targeting of threats received. High Attack Index users are Very Attacked People (VAPs).",
+            "key_fields": [
+              "attack_index",
+              "threat_count",
+              "vap_classification"
+            ]
+          }
+        ],
+        "tap_siem_api": {
+          "endpoint": "https://tap-api-v2.proofpoint.com/v2/siem/all",
+          "auth": "HTTP Basic Auth (Principal + Secret from TAP Dashboard)",
+          "polling_method": "GET with sinceSeconds or sinceTime parameter",
+          "rate_limit": "Default: 1 request per 30 seconds per principal. Contact Proofpoint for rate limit increase.",
+          "event_types_returned": [
+            "messagesDelivered",
+            "messagesBlocked",
+            "clicksBlocked",
+            "clicksPermitted"
+          ],
+          "max_window": "sinceSeconds max: 3600 (1 hour) per request",
+          "response_format": "JSON"
+        }
+      },
+      "threat_response_auto_pull": {
+        "description": "TRAP automatically retracts malicious messages from recipients' mailboxes after delivery (when a URL or attachment is retrospectively found malicious). Integrates with Office 365 and Google Workspace.",
+        "key_telemetry": [
+          "Message retraction events",
+          "Retraction outcome (success/failure)",
+          "Threat name that triggered retraction"
+        ],
+        "detection_value": "Post-delivery threat remediation \u2014 indicates a message bypassed initial filtering and was retrospectively identified as malicious."
+      },
+      "proofpoint_on_demand_api": {
+        "description": "Cloud API for PoD deployments providing access to message metadata, delivery logs, and quarantine management.",
+        "endpoints": [
+          "GET /v1/message/search \u2014 Message metadata search",
+          "GET /v1/quarantine \u2014 Quarantine queue access",
+          "GET /v1/audit/log \u2014 Audit events"
+        ]
+      }
+    },
+    "telemetry_sources_for_siem": {
+      "tap_siem_api": {
+        "description": "Primary telemetry source for detection engineering. Rich JSON events for messages and clicks with full threat context.",
+        "event_categories": [
+          {
+            "category": "messagesDelivered",
+            "description": "Messages that passed filtering and were delivered to the recipient. Includes all metadata, threat scores, and any TAP verdicts.",
+            "detection_value": "Critical \u2014 delivered malicious messages, spear phishing, BEC that bypassed filters."
+          },
+          {
+            "category": "messagesBlocked",
+            "description": "Messages that were blocked, quarantined, or discarded.",
+            "detection_value": "High \u2014 volume and nature of blocked threats, blocked impostor attempts."
+          },
+          {
+            "category": "clicksBlocked",
+            "description": "URL clicks by users that were blocked by TAP URL Defense at click time.",
+            "detection_value": "Critical \u2014 user clicked on a malicious URL (user interaction with threat confirmed)."
+          },
+          {
+            "category": "clicksPermitted",
+            "description": "URL clicks that TAP allowed to proceed (URL was evaluated as clean or unknown at click time).",
+            "detection_value": "High \u2014 clicks on subsequently-malicious URLs, suspicious destinations, initial access telemetry."
+          }
+        ]
+      },
+      "pps_syslog": {
+        "description": "On-premises PPS syslog stream. Less structured than TAP SIEM API but covers all MTA-level events including connections, delivery, and policy actions.",
+        "log_types": [
+          {
+            "log_type": "maillog",
+            "description": "Sendmail-compatible SMTP transaction log. Covers message acceptance, routing, and delivery.",
+            "format": "Syslog (RFC 3164)",
+            "key_fields": [
+              "msgid",
+              "to",
+              "from",
+              "relay",
+              "status",
+              "size",
+              "tls"
+            ]
+          },
+          {
+            "log_type": "pffilter",
+            "description": "Proofpoint filter engine decisions. Covers module verdicts, policy rule matches, and final disposition.",
+            "format": "Syslog (RFC 3164)",
+            "key_fields": [
+              "msgid",
+              "rule_name",
+              "module",
+              "verdict",
+              "spam_score",
+              "virus_name"
+            ]
+          },
+          {
+            "log_type": "pfsyslogd",
+            "description": "System-level Proofpoint events \u2014 policy updates, license events, agent health.",
+            "format": "Syslog (RFC 3164)"
+          },
+          {
+            "log_type": "click_log",
+            "description": "URL click events generated by URL Defense module.",
+            "format": "Syslog (RFC 3164) or JSON",
+            "key_fields": [
+              "user",
+              "url",
+              "verdict",
+              "threat_name",
+              "timestamp"
+            ]
+          }
+        ]
+      },
+      "tap_dashboard_api": {
+        "description": "REST API for TAP dashboard data including top threats, top attackers, VAP (Very Attacked People) reports, and campaign details.",
+        "endpoints": [
+          "GET /v2/campaign/ids \u2014 List recent campaign IDs",
+          "GET /v2/campaign/{id} \u2014 Campaign details and associated messages",
+          "GET /v2/people/vap \u2014 Very Attacked People list",
+          "GET /v2/threat/summary \u2014 Threat summary by time window"
+        ]
+      }
+    },
+    "detection_architecture": {
+      "siem_integration_patterns": [
+        {
+          "pattern": "TAP SIEM API Polling",
+          "description": "SIEM or log aggregator polls /v2/siem/all endpoint every 30\u2013300 seconds. Events are parsed and indexed.",
+          "recommended_polling_interval": "60 seconds",
+          "latency": "Events available typically within 2\u20135 minutes of message processing"
+        },
+        {
+          "pattern": "PPS Syslog Push",
+          "description": "PPS appliance pushes syslog to SIEM listener (UDP/TCP 514 or TCP 6514 TLS). Near-real-time.",
+          "latency": "Seconds"
+        },
+        {
+          "pattern": "SIEM Connector (Splunk TA, Sentinel Connector)",
+          "description": "Pre-built SIEM add-ons that handle API polling, field extraction, and CIM mapping.",
+          "available_for": [
+            "Splunk (Proofpoint TAP Add-on)",
+            "Microsoft Sentinel (Proofpoint TAP connector)",
+            "IBM QRadar (Proofpoint DSM)"
+          ]
+        }
+      ]
+    }
+  },
+  "data_models": {
+    "tap_message_event": {
+      "description": "Schema for TAP SIEM API message events (messagesDelivered and messagesBlocked). This is the richest and most detection-relevant event type from Proofpoint.",
+      "top_level_fields": [
+        {
+          "field": "GUID",
+          "type": "string (UUID)",
+          "description": "Globally unique identifier for the message event assigned by Proofpoint TAP.",
+          "example": "b27dbea0-1234-5678-abcd-ef0123456789",
+          "siem_mapping": "event_id"
+        },
+        {
+          "field": "QID",
+          "type": "string",
+          "description": "MTA Queue ID \u2014 matches maillog entries on PPS. Primary correlation key between TAP events and syslog.",
+          "example": "q1A2B3C4d5E6F",
+          "siem_mapping": "queue_id"
+        },
+        {
+          "field": "id",
+          "type": "string",
+          "description": "Proofpoint message ID (internal). Used for TRAP retraction correlation.",
+          "siem_mapping": "message_id_internal"
+        },
+        {
+          "field": "eventType",
+          "type": "enum",
+          "description": "Category of the event within the TAP API response envelope.",
+          "valid_values": [
+            "messagesDelivered",
+            "messagesBlocked"
+          ]
+        },
+        {
+          "field": "spamScore",
+          "type": "integer (0-100)",
+          "description": "Proofpoint spam confidence score. 0 = not spam, 100 = certain spam.",
+          "filterable": true,
+          "detection_threshold": ">=90 for bulk spam detection"
+        },
+        {
+          "field": "phishScore",
+          "type": "integer (0-100)",
+          "description": "Phishing confidence score. Composite score from ML models and threat intelligence.",
+          "filterable": true,
+          "detection_threshold": ">=90 for high-confidence phishing, >=50 for suspicious"
+        },
+        {
+          "field": "impostorScore",
+          "type": "float (0-1)",
+          "description": "BEC impostor confidence score (0.0\u20131.0). Values >0.9 indicate strong BEC signal.",
+          "filterable": true,
+          "detection_threshold": ">0.9 for BEC detection alert"
+        },
+        {
+          "field": "malwareScore",
+          "type": "integer (0-100)",
+          "description": "Malware confidence score for the message.",
+          "filterable": true
+        },
+        {
+          "field": "spamClassification",
+          "type": "string",
+          "description": "Human-readable spam classification label.",
+          "example": "phish",
+          "valid_values": [
+            "spam",
+            "phish",
+            "bulkgray",
+            "bulkwhite",
+            "adult",
+            "impostor",
+            "malware",
+            "none"
+          ]
+        },
+        {
+          "field": "completelyRewritten",
+          "type": "boolean",
+          "description": "True if all URLs in the message were rewritten by URL Defense.",
+          "siem_note": "False indicates partial URL rewriting \u2014 some URLs may not be protected."
+        },
+        {
+          "field": "quarantineFolder",
+          "type": "string",
+          "description": "Name of quarantine folder where message was held (if quarantined).",
+          "example": "Phish"
+        },
+        {
+          "field": "quarantineRule",
+          "type": "string",
+          "description": "Name of the policy rule that triggered quarantine action.",
+          "example": "pp_phish_rule"
+        },
+        {
+          "field": "policyRoutes",
+          "type": "array<string>",
+          "description": "List of policy routes the message matched in order.",
+          "example": [
+            "default_inbound",
+            "high_risk_attachments"
+          ]
+        },
+        {
+          "field": "modulesRun",
+          "type": "array<string>",
+          "description": "Filtering modules that evaluated the message.",
+          "example": [
+            "spam",
+            "av",
+            "urldefense",
+            "sandboxing",
+            "impostor"
+          ]
+        },
+        {
+          "field": "messageSize",
+          "type": "integer",
+          "description": "Message size in bytes.",
+          "siem_mapping": "email_size_bytes"
+        },
+        {
+          "field": "messageTime",
+          "type": "datetime (ISO 8601)",
+          "description": "Timestamp when the message was received and processed by Proofpoint.",
+          "example": "2024-06-15T14:32:01.000Z",
+          "siem_mapping": "event_timestamp"
+        },
+        {
+          "field": "clusterId",
+          "type": "string",
+          "description": "Proofpoint cluster/node that processed the message. Useful for infrastructure troubleshooting.",
+          "example": "hosted_pod1"
+        },
+        {
+          "field": "fromAddress",
+          "type": "array<string>",
+          "description": "MIME From header value(s). May differ from envelope sender (5321.MailFrom). Primary BEC detection field.",
+          "example": [
+            "ceo@corp-lookalike.com"
+          ],
+          "siem_mapping": "src_email_from"
+        },
+        {
+          "field": "toAddresses",
+          "type": "array<string>",
+          "description": "MIME To header recipient(s).",
+          "example": [
+            "finance@corp.com"
+          ],
+          "siem_mapping": "dst_email_to"
+        },
+        {
+          "field": "ccAddresses",
+          "type": "array<string>",
+          "description": "MIME CC header recipients.",
+          "siem_mapping": "email_cc"
+        },
+        {
+          "field": "replyToAddress",
+          "type": "array<string>",
+          "description": "Reply-To header address(es). Critical for BEC detection \u2014 reply misdirection technique.",
+          "siem_mapping": "email_reply_to",
+          "detection_note": "Alert when replyToAddress domain differs from fromAddress domain."
+        },
+        {
+          "field": "sender",
+          "type": "string",
+          "description": "Envelope sender (SMTP MAIL FROM / RFC 5321.MailFrom). Used for SPF authentication.",
+          "example": "bounce@mailer.phish-domain.net",
+          "siem_mapping": "email_envelope_from"
+        },
+        {
+          "field": "senderIP",
+          "type": "string",
+          "description": "IP address of the sending MTA that delivered the message to Proofpoint.",
+          "example": "198.51.100.45",
+          "siem_mapping": "src_ip"
+        },
+        {
+          "field": "headerFrom",
+          "type": "string",
+          "description": "Raw value of the From: header. For BEC detection \u2014 compare with sender and recipient domains.",
+          "siem_mapping": "email_header_from"
+        },
+        {
+          "field": "headerReplyTo",
+          "type": "string",
+          "description": "Raw Reply-To header value.",
+          "siem_mapping": "email_header_reply_to"
+        },
+        {
+          "field": "subject",
+          "type": "string",
+          "description": "Email subject line. May be truncated or redacted for privacy in some configurations.",
+          "example": "Urgent Wire Transfer Request",
+          "siem_mapping": "email_subject"
+        },
+        {
+          "field": "xmailer",
+          "type": "string",
+          "description": "X-Mailer header value \u2014 identifies the email client or sending platform.",
+          "siem_mapping": "email_xmailer"
+        },
+        {
+          "field": "messageParts",
+          "type": "array<object>",
+          "description": "Array of message parts (attachments, body parts). Each part contains filename, MD5, SHA256, content type, disposition, and sandbox verdict.",
+          "see": "messageParts_schema"
+        },
+        {
+          "field": "threatsInfoMap",
+          "type": "array<object>",
+          "description": "Array of threat objects for each identified threat in the message. Core threat intelligence payload.",
+          "see": "threatsInfoMap_schema"
+        },
+        {
+          "field": "headerCC",
+          "type": "string",
+          "description": "Raw CC header.",
+          "siem_mapping": "email_header_cc"
+        }
+      ],
+      "authentication_fields": {
+        "description": "Sender authentication results. Critical for spoofing and BEC detection.",
+        "fields": [
+          {
+            "field": "spf",
+            "type": "object",
+            "description": "SPF authentication result for the envelope sender.",
+            "sub_fields": [
+              {
+                "field": "spf.domain",
+                "type": "string",
+                "description": "Domain evaluated for SPF."
+              },
+              {
+                "field": "spf.result",
+                "type": "enum",
+                "description": "SPF verdict.",
+                "valid_values": [
+                  "pass",
+                  "fail",
+                  "softfail",
+                  "neutral",
+                  "none",
+                  "temperror",
+                  "permerror"
+                ]
+              },
+              {
+                "field": "spf.selector",
+                "type": "string",
+                "description": "SPF selector used (rarely populated)."
+              }
+            ]
+          },
+          {
+            "field": "dkim",
+            "type": "object",
+            "description": "DKIM signature verification result.",
+            "sub_fields": [
+              {
+                "field": "dkim.domain",
+                "type": "string",
+                "description": "Domain from the DKIM d= tag."
+              },
+              {
+                "field": "dkim.selector",
+                "type": "string",
+                "description": "DKIM selector."
+              },
+              {
+                "field": "dkim.result",
+                "type": "enum",
+                "description": "DKIM verification result.",
+                "valid_values": [
+                  "pass",
+                  "fail",
+                  "neutral",
+                  "none",
+                  "temperror",
+                  "permerror",
+                  "policy"
+                ]
+              }
+            ]
+          },
+          {
+            "field": "dmarc",
+            "type": "object",
+            "description": "DMARC policy evaluation result.",
+            "sub_fields": [
+              {
+                "field": "dmarc.domain",
+                "type": "string",
+                "description": "Domain evaluated for DMARC (from-address organizational domain)."
+              },
+              {
+                "field": "dmarc.alignment",
+                "type": "enum",
+                "description": "DMARC alignment result.",
+                "valid_values": [
+                  "pass",
+                  "fail"
+                ]
+              },
+              {
+                "field": "dmarc.policy",
+                "type": "enum",
+                "description": "DMARC policy applied.",
+                "valid_values": [
+                  "none",
+                  "quarantine",
+                  "reject"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "messageParts_schema": {
+        "description": "Each element in the messageParts array represents one part of the email (attachment or body part).",
+        "fields": [
+          {
+            "field": "filename",
+            "type": "string",
+            "description": "Attachment filename.",
+            "example": "invoice_2024.xlsm"
+          },
+          {
+            "field": "contentType",
+            "type": "string",
+            "description": "MIME content type.",
+            "example": "application/vnd.ms-excel.sheet.macroEnabled.12"
+          },
+          {
+            "field": "md5",
+            "type": "string (MD5 hex)",
+            "description": "MD5 hash of the attachment. For threat intel correlation.",
+            "siem_mapping": "file_hash_md5"
+          },
+          {
+            "field": "sha256",
+            "type": "string (SHA256 hex)",
+            "description": "SHA256 hash of the attachment. Preferred for threat intel lookups (VirusTotal, etc.).",
+            "siem_mapping": "file_hash_sha256"
+          },
+          {
+            "field": "disposition",
+            "type": "enum",
+            "description": "What Proofpoint did with this part.",
+            "valid_values": [
+              "attached",
+              "inline",
+              "stripped",
+              "replaced"
+            ]
+          },
+          {
+            "field": "sandboxStatus",
+            "type": "enum",
+            "description": "TAP sandbox verdict for this attachment.",
+            "valid_values": [
+              "CLEAN",
+              "THREAT",
+              "TIMEOUT",
+              "ERROR",
+              "UNSUPPORTED",
+              "ZAPPED",
+              "UNKNOWN"
+            ]
+          },
+          {
+            "field": "oAuthUrl",
+            "type": "string",
+            "description": "URL associated with this part (for OAuth phishing kits).",
+            "siem_note": "Populated when attachment contains an embedded OAuth authorization URL."
+          },
+          {
+            "field": "malwareFamily",
+            "type": "string",
+            "description": "Malware family name if identified by sandbox.",
+            "example": "Emotet"
+          },
+          {
+            "field": "threatName",
+            "type": "string",
+            "description": "Specific threat name.",
+            "example": "W32/Emotet.BU!tr"
+          }
+        ]
+      },
+      "threatsInfoMap_schema": {
+        "description": "Core threat intelligence payload. One entry per distinct threat identified in the message (a message may have multiple threats \u2014 e.g., a malicious URL and a malicious attachment).",
+        "fields": [
+          {
+            "field": "threatID",
+            "type": "string (SHA256)",
+            "description": "Unique threat identifier \u2014 SHA256 of the threat artifact (URL or file). Use for deduplication and threat intel correlation.",
+            "siem_mapping": "threat_id"
+          },
+          {
+            "field": "threatStatus",
+            "type": "enum",
+            "description": "Current status of the threat in Proofpoint's intelligence.",
+            "valid_values": [
+              "active",
+              "cleared",
+              "falsePositive"
+            ],
+            "detection_note": "Monitor for status changes \u2014 'cleared' or 'falsePositive' may require alert suppression."
+          },
+          {
+            "field": "threatType",
+            "type": "enum",
+            "description": "Type of threat artifact.",
+            "valid_values": [
+              "url",
+              "attachment",
+              "hybrid"
+            ],
+            "siem_mapping": "threat_type"
+          },
+          {
+            "field": "threat",
+            "type": "string",
+            "description": "The actual threat artifact \u2014 either the malicious URL or the file SHA256.",
+            "siem_mapping": "threat_artifact"
+          },
+          {
+            "field": "threatUrl",
+            "type": "string",
+            "description": "Proofpoint Threat Insight URL for this specific threat (links to TAP Dashboard entry).",
+            "siem_mapping": "threat_intel_url"
+          },
+          {
+            "field": "classification",
+            "type": "enum",
+            "description": "Threat classification category.",
+            "valid_values": [
+              "phish",
+              "malware",
+              "spam",
+              "impostor",
+              "bec",
+              "ransomware",
+              "apt",
+              "unknown"
+            ],
+            "siem_mapping": "threat_classification"
+          },
+          {
+            "field": "campaignId",
+            "type": "string",
+            "description": "Campaign identifier if threat is part of a tracked campaign. Links related messages across recipients.",
+            "siem_mapping": "campaign_id",
+            "detection_value": "Use to correlate all messages from the same threat campaign across the organization."
+          },
+          {
+            "field": "malwareFamily",
+            "type": "string",
+            "description": "Malware family name from Proofpoint's threat intelligence.",
+            "example": "QakBot",
+            "siem_mapping": "malware_family"
+          },
+          {
+            "field": "attackIndexScore",
+            "type": "integer",
+            "description": "Attack Index contribution score for this specific threat toward the recipient's VAP score.",
+            "siem_mapping": "attack_index_score"
+          }
+        ]
+      }
+    },
+    "tap_click_event": {
+      "description": "Schema for TAP URL click events (clicksBlocked and clicksPermitted). Generated when a user clicks a URL that was rewritten by URL Defense.",
+      "fields": [
+        {
+          "field": "GUID",
+          "type": "string (UUID)",
+          "description": "Unique click event identifier.",
+          "siem_mapping": "event_id"
+        },
+        {
+          "field": "messageID",
+          "type": "string",
+          "description": "Proofpoint message ID of the email containing the clicked URL. Joins to message events.",
+          "siem_mapping": "message_id",
+          "join_key": "id field on message events"
+        },
+        {
+          "field": "messageParts[].sha256",
+          "type": "string",
+          "description": "SHA256 of the email containing the click \u2014 for cross-event correlation."
+        },
+        {
+          "field": "sender",
+          "type": "string",
+          "description": "Envelope sender of the email containing the clicked URL.",
+          "siem_mapping": "email_sender"
+        },
+        {
+          "field": "recipient",
+          "type": "string",
+          "description": "Recipient who clicked the URL.",
+          "siem_mapping": "email_recipient",
+          "detection_value": "Identifies the specific user who interacted with the threat."
+        },
+        {
+          "field": "userAgent",
+          "type": "string",
+          "description": "HTTP User-Agent string from the click request. Identifies browser, OS, and client.",
+          "siem_mapping": "http_user_agent"
+        },
+        {
+          "field": "url",
+          "type": "string",
+          "description": "The original (pre-rewrite) malicious URL that was clicked.",
+          "siem_mapping": "url",
+          "detection_value": "High \u2014 extract domain, path, and parameters for IOC matching."
+        },
+        {
+          "field": "clickIP",
+          "type": "string",
+          "description": "IP address from which the click originated. May be user workstation, proxy, or cloud email client.",
+          "siem_mapping": "src_ip"
+        },
+        {
+          "field": "clickTime",
+          "type": "datetime (ISO 8601)",
+          "description": "Timestamp of the URL click.",
+          "siem_mapping": "event_timestamp"
+        },
+        {
+          "field": "threatID",
+          "type": "string (SHA256)",
+          "description": "Threat ID \u2014 matches threatID in the corresponding message event.",
+          "siem_mapping": "threat_id"
+        },
+        {
+          "field": "threatStatus",
+          "type": "enum",
+          "description": "Current threat status.",
+          "valid_values": [
+            "active",
+            "cleared",
+            "falsePositive"
+          ]
+        },
+        {
+          "field": "threatURL",
+          "type": "string",
+          "description": "Proofpoint Threat Insight URL for this threat.",
+          "siem_mapping": "threat_intel_url"
+        },
+        {
+          "field": "classification",
+          "type": "enum",
+          "description": "Threat classification.",
+          "valid_values": [
+            "phish",
+            "malware",
+            "spam",
+            "ransomware",
+            "apt"
+          ],
+          "siem_mapping": "threat_classification"
+        },
+        {
+          "field": "campaignId",
+          "type": "string",
+          "description": "Campaign identifier.",
+          "siem_mapping": "campaign_id"
+        },
+        {
+          "field": "malwareFamily",
+          "type": "string",
+          "description": "Malware family if URL delivers malware.",
+          "siem_mapping": "malware_family"
+        },
+        {
+          "field": "eventType",
+          "type": "enum",
+          "description": "Click event type.",
+          "valid_values": [
+            "clicksBlocked",
+            "clicksPermitted"
+          ]
+        }
+      ]
+    },
+    "pps_syslog_fields": {
+      "description": "Field reference for Proofpoint Protection Server syslog output. Two primary log streams: maillog (MTA) and pffilter (filter engine).",
+      "maillog_fields": {
+        "description": "Sendmail-format MTA log. Each SMTP transaction generates multiple log lines keyed by queue ID.",
+        "fields": [
+          {
+            "field": "timestamp",
+            "type": "datetime (syslog format)",
+            "description": "Syslog event timestamp.",
+            "format": "Mon DD HH:MM:SS",
+            "siem_note": "No year in standard syslog \u2014 derive from receive date or inject at collection time."
+          },
+          {
+            "field": "hostname",
+            "type": "string",
+            "description": "PPS appliance hostname."
+          },
+          {
+            "field": "process",
+            "type": "string",
+            "description": "Process generating the log line.",
+            "valid_values": [
+              "sm-mta",
+              "sendmail",
+              "proofpoint"
+            ]
+          },
+          {
+            "field": "queueid",
+            "type": "string",
+            "description": "Sendmail queue ID. Primary correlation key within maillog and across to pffilter.",
+            "example": "q1A2B3C4d",
+            "siem_mapping": "queue_id"
+          },
+          {
+            "field": "from",
+            "type": "string",
+            "description": "Envelope sender address (MAIL FROM).",
+            "example": "from=<attacker@phish.net>",
+            "siem_mapping": "email_envelope_from"
+          },
+          {
+            "field": "to",
+            "type": "string",
+            "description": "Envelope recipient (RCPT TO).",
+            "example": "to=<user@corp.com>",
+            "siem_mapping": "email_envelope_to"
+          },
+          {
+            "field": "msgid",
+            "type": "string",
+            "description": "Message-ID header value.",
+            "example": "msgid=<abc123@mail.phish.net>",
+            "siem_mapping": "email_message_id"
+          },
+          {
+            "field": "relay",
+            "type": "string",
+            "description": "Relay MTA \u2014 the server that delivered the message to PPS. Contains hostname and IP.",
+            "example": "relay=mail.phish.net [198.51.100.45]",
+            "siem_mapping": "src_relay"
+          },
+          {
+            "field": "status",
+            "type": "string",
+            "description": "Delivery status.",
+            "valid_values": [
+              "sent",
+              "bounced",
+              "deferred"
+            ],
+            "siem_mapping": "delivery_status"
+          },
+          {
+            "field": "size",
+            "type": "integer",
+            "description": "Message size in bytes.",
+            "siem_mapping": "email_size_bytes"
+          },
+          {
+            "field": "nrcpts",
+            "type": "integer",
+            "description": "Number of recipients.",
+            "siem_mapping": "recipient_count"
+          },
+          {
+            "field": "proto",
+            "type": "string",
+            "description": "SMTP protocol used.",
+            "valid_values": [
+              "SMTP",
+              "ESMTP",
+              "ESMTPS"
+            ],
+            "siem_mapping": "smtp_protocol"
+          },
+          {
+            "field": "tls_cipher",
+            "type": "string",
+            "description": "TLS cipher suite if TLS was used.",
+            "example": "TLSv1.2:ECDHE-RSA-AES256-GCM-SHA384:256",
+            "siem_mapping": "tls_cipher"
+          },
+          {
+            "field": "dsn",
+            "type": "string",
+            "description": "Delivery Status Notification code.",
+            "example": "2.0.0",
+            "siem_mapping": "dsn_code"
+          }
+        ]
+      },
+      "pffilter_fields": {
+        "description": "Proofpoint filter engine decision log. Generated per-module per-message.",
+        "fields": [
+          {
+            "field": "timestamp",
+            "type": "datetime (syslog)",
+            "description": "Log timestamp."
+          },
+          {
+            "field": "queueid",
+            "type": "string",
+            "description": "Sendmail queue ID \u2014 joins to maillog.",
+            "siem_mapping": "queue_id"
+          },
+          {
+            "field": "module",
+            "type": "string",
+            "description": "Filter module that generated the event.",
+            "valid_values": [
+              "spam",
+              "av",
+              "urldefense",
+              "attach",
+              "impostor",
+              "dlp",
+              "content"
+            ],
+            "siem_mapping": "filter_module"
+          },
+          {
+            "field": "rule",
+            "type": "string",
+            "description": "Policy rule name that matched.",
+            "siem_mapping": "policy_rule"
+          },
+          {
+            "field": "action",
+            "type": "string",
+            "description": "Action taken by this module.",
+            "valid_values": [
+              "pass",
+              "block",
+              "quarantine",
+              "discard",
+              "tag",
+              "strip",
+              "encrypt",
+              "notify"
+            ],
+            "siem_mapping": "filter_action"
+          },
+          {
+            "field": "score",
+            "type": "integer",
+            "description": "Module-specific score.",
+            "siem_mapping": "filter_score"
+          },
+          {
+            "field": "virus_name",
+            "type": "string",
+            "description": "Virus/malware name if detected by AV module.",
+            "siem_mapping": "malware_name"
+          },
+          {
+            "field": "threat_type",
+            "type": "string",
+            "description": "Threat type classification.",
+            "siem_mapping": "threat_type"
+          },
+          {
+            "field": "url",
+            "type": "string",
+            "description": "URL analyzed by URL Defense module.",
+            "siem_mapping": "url"
+          },
+          {
+            "field": "filename",
+            "type": "string",
+            "description": "Attachment filename analyzed.",
+            "siem_mapping": "file_name"
+          },
+          {
+            "field": "sender",
+            "type": "string",
+            "description": "Envelope sender.",
+            "siem_mapping": "email_sender"
+          },
+          {
+            "field": "recipient",
+            "type": "string",
+            "description": "Recipient address.",
+            "siem_mapping": "email_recipient"
+          },
+          {
+            "field": "subject",
+            "type": "string",
+            "description": "Message subject (may be truncated).",
+            "siem_mapping": "email_subject"
+          },
+          {
+            "field": "from_header",
+            "type": "string",
+            "description": "MIME From header (display name + address).",
+            "siem_mapping": "email_from_header"
+          },
+          {
+            "field": "sender_ip",
+            "type": "string",
+            "description": "Sending MTA IP.",
+            "siem_mapping": "src_ip"
+          },
+          {
+            "field": "spf_result",
+            "type": "enum",
+            "description": "SPF verification result.",
+            "valid_values": [
+              "pass",
+              "fail",
+              "softfail",
+              "neutral",
+              "none"
+            ],
+            "siem_mapping": "spf_result"
+          },
+          {
+            "field": "dkim_result",
+            "type": "enum",
+            "description": "DKIM verification result.",
+            "siem_mapping": "dkim_result"
+          },
+          {
+            "field": "dmarc_result",
+            "type": "enum",
+            "description": "DMARC policy result.",
+            "siem_mapping": "dmarc_result"
+          }
+        ]
+      }
+    },
+    "trap_retraction_event": {
+      "description": "Event generated when TRAP (Threat Response Auto-Pull) retracts a message from a recipient mailbox post-delivery.",
+      "fields": [
+        {
+          "field": "id",
+          "type": "string",
+          "description": "Retraction event ID."
+        },
+        {
+          "field": "messageID",
+          "type": "string",
+          "description": "Proofpoint message ID of the retracted message.",
+          "siem_mapping": "message_id"
+        },
+        {
+          "field": "recipient",
+          "type": "string",
+          "description": "Mailbox from which the message was retracted.",
+          "siem_mapping": "email_recipient"
+        },
+        {
+          "field": "subject",
+          "type": "string",
+          "description": "Subject of the retracted message.",
+          "siem_mapping": "email_subject"
+        },
+        {
+          "field": "sender",
+          "type": "string",
+          "description": "Original sender of the retracted message.",
+          "siem_mapping": "email_sender"
+        },
+        {
+          "field": "retractTime",
+          "type": "datetime (ISO 8601)",
+          "description": "Timestamp of retraction.",
+          "siem_mapping": "event_timestamp"
+        },
+        {
+          "field": "status",
+          "type": "enum",
+          "description": "Retraction outcome.",
+          "valid_values": [
+            "success",
+            "failure",
+            "not_found"
+          ],
+          "siem_mapping": "retraction_status"
+        },
+        {
+          "field": "threatName",
+          "type": "string",
+          "description": "Name of the threat that triggered retraction.",
+          "siem_mapping": "threat_name"
+        },
+        {
+          "field": "threatType",
+          "type": "enum",
+          "description": "Type of threat.",
+          "valid_values": [
+            "url",
+            "attachment"
+          ],
+          "siem_mapping": "threat_type"
+        },
+        {
+          "field": "campaignId",
+          "type": "string",
+          "description": "Campaign ID if applicable.",
+          "siem_mapping": "campaign_id"
+        },
+        {
+          "field": "mailboxProvider",
+          "type": "enum",
+          "description": "Target mailbox provider.",
+          "valid_values": [
+            "O365",
+            "Gmail",
+            "Exchange"
+          ],
+          "siem_mapping": "mailbox_provider"
+        }
+      ]
+    },
+    "email_fraud_defense_fields": {
+      "description": "DMARC aggregate and forensic report data from Email Fraud Defense (EFD). Useful for detecting domain abuse and spoofing of owned domains.",
+      "aggregate_report_fields": [
+        {
+          "field": "report_metadata.org_name",
+          "type": "string",
+          "description": "Reporting organization (receiver).",
+          "example": "Google"
+        },
+        {
+          "field": "report_metadata.date_range.begin",
+          "type": "integer (Unix)",
+          "description": "Start of reporting period."
+        },
+        {
+          "field": "report_metadata.date_range.end",
+          "type": "integer (Unix)",
+          "description": "End of reporting period."
+        },
+        {
+          "field": "policy_published.domain",
+          "type": "string",
+          "description": "Domain with published DMARC policy.",
+          "siem_mapping": "dmarc_domain"
+        },
+        {
+          "field": "policy_published.p",
+          "type": "enum",
+          "description": "Published DMARC policy.",
+          "valid_values": [
+            "none",
+            "quarantine",
+            "reject"
+          ],
+          "siem_mapping": "dmarc_policy"
+        },
+        {
+          "field": "record.row.source_ip",
+          "type": "string",
+          "description": "IP address of the sending server.",
+          "siem_mapping": "src_ip"
+        },
+        {
+          "field": "record.row.count",
+          "type": "integer",
+          "description": "Number of messages sent from this IP for this domain.",
+          "siem_mapping": "message_count"
+        },
+        {
+          "field": "record.row.policy_evaluated.dkim",
+          "type": "enum",
+          "description": "DKIM alignment result.",
+          "valid_values": [
+            "pass",
+            "fail"
+          ]
+        },
+        {
+          "field": "record.row.policy_evaluated.spf",
+          "type": "enum",
+          "description": "SPF alignment result.",
+          "valid_values": [
+            "pass",
+            "fail"
+          ]
+        },
+        {
+          "field": "record.row.policy_evaluated.disposition",
+          "type": "enum",
+          "description": "Disposition applied.",
+          "valid_values": [
+            "none",
+            "quarantine",
+            "reject"
+          ]
+        },
+        {
+          "field": "record.identifiers.header_from",
+          "type": "string",
+          "description": "Domain from the From header.",
+          "siem_mapping": "email_from_domain"
+        },
+        {
+          "field": "record.auth_results.spf.domain",
+          "type": "string",
+          "description": "Domain evaluated for SPF."
+        },
+        {
+          "field": "record.auth_results.spf.result",
+          "type": "enum",
+          "description": "SPF check result.",
+          "valid_values": [
+            "pass",
+            "fail",
+            "softfail",
+            "neutral",
+            "none"
+          ]
+        },
+        {
+          "field": "record.auth_results.dkim.domain",
+          "type": "string",
+          "description": "DKIM signing domain."
+        },
+        {
+          "field": "record.auth_results.dkim.result",
+          "type": "enum",
+          "description": "DKIM verification result.",
+          "valid_values": [
+            "pass",
+            "fail",
+            "none"
+          ]
+        }
+      ]
+    }
+  },
+  "detection_engineering": {
+    "detection_patterns": {
+      "delivered_phish_high_confidence": {
+        "description": "High-confidence phishing message delivered to user inbox \u2014 immediate investigation and potential retraction required.",
+        "event_source": "TAP SIEM API \u2014 messagesDelivered",
+        "logic": "phishScore >= 90 AND eventType = messagesDelivered",
+        "escalation_signals": [
+          "threatsInfoMap[].classification = phish",
+          "completelyRewritten = false (URL not fully protected)",
+          "recipient is in VAP list",
+          "campaignId is populated (tracked campaign)"
+        ],
+        "severity": "Critical",
+        "recommended_response": [
+          "Check TRAP retraction status",
+          "Notify recipient",
+          "Block sender IP and domain",
+          "Search for other recipients of same campaignId"
+        ]
+      },
+      "delivered_malware_attachment": {
+        "description": "Message with malicious attachment delivered. Sandbox verdict confirmed malware.",
+        "event_source": "TAP SIEM API \u2014 messagesDelivered",
+        "logic": "messageParts[].sandboxStatus = THREAT AND eventType = messagesDelivered",
+        "key_fields": [
+          "messageParts[].sha256 (for EDR IOC matching)",
+          "messageParts[].malwareFamily",
+          "messageParts[].filename"
+        ],
+        "severity": "Critical",
+        "escalation_signals": [
+          "malwareFamily in [Emotet, QakBot, Dridex, IcedID, Cobalt Strike]",
+          "messageParts[].contentType = application/zip (password-protected archive evasion)",
+          "recipient.is_privileged = true"
+        ],
+        "recommended_response": [
+          "Submit SHA256 to EDR for retrospective search",
+          "Isolate recipient workstation if opened",
+          "TRAP retraction if not yet opened"
+        ]
+      },
+      "user_clicked_blocked_url": {
+        "description": "User clicked a URL that TAP blocked at click time \u2014 threat interaction confirmed.",
+        "event_source": "TAP SIEM API \u2014 clicksBlocked",
+        "logic": "eventType = clicksBlocked",
+        "severity": "High",
+        "key_fields": [
+          "recipient (user who clicked)",
+          "url (malicious URL)",
+          "clickIP (user's IP)",
+          "userAgent",
+          "classification",
+          "malwareFamily"
+        ],
+        "escalation_signals": [
+          "classification = malware (not just phish)",
+          "Multiple clicks from same recipient in short window (persistence attempt)",
+          "clickIP differs from recipient's known corporate IP (forwarded email, mobile)"
+        ],
+        "recommended_response": [
+          "Alert user's manager and security team",
+          "Check for credential submission before block",
+          "Verify no persistence on endpoint via EDR",
+          "Block URL at proxy/NGFW"
+        ]
+      },
+      "user_clicked_permitted_url": {
+        "description": "User clicked a URL that was permitted \u2014 URL may have been clean at click time but suspicious context warrants investigation.",
+        "event_source": "TAP SIEM API \u2014 clicksPermitted",
+        "logic": "eventType = clicksPermitted AND classification in [phish, malware]",
+        "severity": "Medium",
+        "notes": "clicksPermitted with a threat classification indicates the URL was retrospectively found malicious \u2014 treat as equivalent to clicksBlocked but with higher urgency (user may have fully loaded the page).",
+        "recommended_response": [
+          "Immediate user outreach",
+          "Check EDR telemetry from clickIP",
+          "Reset credentials if phish classification",
+          "TRAP retraction of original message"
+        ]
+      },
+      "bec_impostor_delivered": {
+        "description": "Business Email Compromise / impostor message delivered \u2014 high impostorScore indicates strong BEC signal.",
+        "event_source": "TAP SIEM API \u2014 messagesDelivered",
+        "logic": "impostorScore >= 0.9 AND eventType = messagesDelivered",
+        "severity": "Critical",
+        "key_detection_fields": [
+          "fromAddress vs sender domain mismatch",
+          "replyToAddress domain differs from fromAddress domain",
+          "subject contains keywords: wire transfer, invoice, payment, urgent, CEO, executive",
+          "toAddresses targeting finance, accounts payable, HR, payroll"
+        ],
+        "advanced_logic": "impostorScore >= 0.9 AND (headerReplyTo domain != fromAddress domain OR sender domain != fromAddress domain)",
+        "recommended_response": [
+          "Alert finance/target team immediately",
+          "Confirm authenticity via out-of-band communication",
+          "Block sender domain",
+          "Escalate to executive communications team"
+        ]
+      },
+      "spf_dkim_dmarc_fail_delivered": {
+        "description": "Message delivered despite failing all sender authentication checks \u2014 potential spoofing of a trusted domain.",
+        "event_source": "TAP SIEM API \u2014 messagesDelivered",
+        "logic": "spf.result in [fail, softfail] AND dkim.result = fail AND dmarc.alignment = fail AND eventType = messagesDelivered",
+        "severity": "High",
+        "escalation_signals": [
+          "fromAddress domain matches internal organizational domain (exact domain spoofing)",
+          "fromAddress display name matches executive or VIP",
+          "phishScore >= 70"
+        ],
+        "recommended_response": [
+          "Investigate for domain spoofing attack",
+          "Check DMARC policy for sender domain \u2014 enforcement may be missing",
+          "Consider TRAP retraction"
+        ]
+      },
+      "reply_to_mismatch_bec": {
+        "description": "From address and Reply-To address are on completely different domains \u2014 classic BEC reply-hijack technique.",
+        "event_source": "TAP SIEM API \u2014 messagesDelivered or messagesBlocked",
+        "logic": "replyToAddress[0] is not null AND extract_domain(replyToAddress[0]) != extract_domain(fromAddress[0]) AND impostorScore >= 0.5",
+        "severity": "High",
+        "notes": "This is a high-precision BEC detection signal. Legitimate Reply-To mismatches are rare in corporate email. Implement an organizational domain allowlist to reduce false positives (e.g., legitimate marketing platforms)."
+      },
+      "high_volume_phishing_campaign": {
+        "description": "High volume of messages from the same campaignId detected \u2014 active targeted phishing campaign against organization.",
+        "event_source": "TAP SIEM API \u2014 messagesDelivered + messagesBlocked",
+        "logic": "campaignId is not null AND count(GUID where campaignId = X) > 10 within 1 hour",
+        "severity": "High",
+        "aggregation_fields": [
+          "campaignId (group by)",
+          "recipient count",
+          "unique sender domains",
+          "unique senderIP values"
+        ],
+        "recommended_response": [
+          "Block all senderIP values associated with campaign",
+          "Hunt for all recipients",
+          "Assess which recipients opened or clicked",
+          "Threat Intel team to review campaignId details in TAP Dashboard"
+        ]
+      },
+      "sandbox_timeout_delivered": {
+        "description": "Attachment was delivered before sandbox analysis completed (async sandbox verdict). Message may contain malware.",
+        "event_source": "TAP SIEM API \u2014 messagesDelivered",
+        "logic": "messageParts[].sandboxStatus = TIMEOUT AND eventType = messagesDelivered",
+        "severity": "Medium",
+        "notes": "Sandbox timeouts on complex malware are a known evasion technique. Treat TIMEOUT verdicts on executables, Office macros, or ZIP files as suspicious.",
+        "file_types_of_concern": [
+          "exe",
+          "dll",
+          "js",
+          "vbs",
+          "xlsm",
+          "docm",
+          "zip",
+          "rar",
+          "iso"
+        ],
+        "recommended_response": [
+          "Monitor for subsequent TAP verdict update",
+          "Check EDR telemetry if recipient opened attachment",
+          "Submit hash to VT manually"
+        ]
+      },
+      "known_malware_family_delivery": {
+        "description": "Message delivering a known, high-severity malware family \u2014 immediate endpoint protection action required.",
+        "event_source": "TAP SIEM API \u2014 messagesDelivered or messagesBlocked",
+        "logic": "threatsInfoMap[].malwareFamily in [Emotet, QakBot, IcedID, BazarLoader, Cobalt Strike, Dridex, TrickBot, TA505, Raccoon, LokiBot] AND eventType = messagesDelivered",
+        "severity": "Critical",
+        "hash_extraction": "Extract messageParts[].sha256 for all delivered messages and submit to EDR as IOC"
+      },
+      "internal_sender_relay_anomaly": {
+        "description": "Message appearing to originate from internal domain but relayed through an unexpected external IP \u2014 potential account compromise or internal relay abuse.",
+        "event_source": "PPS syslog \u2014 maillog + pffilter",
+        "logic": "fromAddress domain = internal_domain AND senderIP NOT IN corporate_mail_server_list AND spf.result != pass",
+        "severity": "High",
+        "notes": "Requires corporate mail server IP allowlist as reference. Compare senderIP against known Exchange Online, Google Workspace, or on-prem relay IPs."
+      },
+      "vap_targeted_attack": {
+        "description": "Very Attacked Person (VAP) received a threat \u2014 elevated risk due to targeting profile.",
+        "event_source": "TAP SIEM API \u2014 messagesDelivered, combined with TAP VAP API",
+        "logic": "recipient in VAP_list AND (phishScore >= 70 OR threatsInfoMap[].classification in [malware, phish, apt])",
+        "severity": "High",
+        "vap_api_endpoint": "GET /v2/people/vap",
+        "notes": "Maintain a dynamic VAP list refreshed from TAP API. Treat all threats to VAPs at one severity level higher than standard threshold."
+      },
+      "data_loss_outbound_dlp": {
+        "description": "Outbound message triggered a DLP rule \u2014 potential data exfiltration via email.",
+        "event_source": "PPS syslog \u2014 pffilter",
+        "logic": "module = dlp AND action in [quarantine, block, notify] AND direction = outbound",
+        "severity": "High",
+        "key_fields": [
+          "rule (DLP rule name)",
+          "recipient (external destination)",
+          "sender (internal user)",
+          "subject",
+          "filename"
+        ],
+        "escalation_signals": [
+          "DLP rule = PCI_Credit_Card or PII_SSN or PHI_Medical",
+          "recipient domain is personal webmail (gmail.com, yahoo.com, hotmail.com)",
+          "sender has been flagged for insider risk previously"
+        ]
+      },
+      "trap_retraction_failure": {
+        "description": "TRAP attempted to retract a malicious message but failed \u2014 recipient may still have access to the threat.",
+        "event_source": "TRAP retraction events",
+        "logic": "retraction_status = failure",
+        "severity": "High",
+        "recommended_response": [
+          "Manual retraction via mailbox admin",
+          "Notify recipient to delete message",
+          "Check if attachment was already opened via EDR"
+        ]
+      },
+      "phishing_from_legitimate_service": {
+        "description": "Phishing message delivered from a legitimate sending platform (DocuSign, SharePoint, Dropbox, OneDrive, Google Drive) \u2014 service abuse technique to bypass reputation filters.",
+        "event_source": "TAP SIEM API \u2014 messagesDelivered",
+        "logic": "phishScore >= 60 AND sender domain in [docusign.com, sharepointonline.com, dropbox.com, drive.google.com, onedrive.live.com, wetransfer.com] AND eventType = messagesDelivered",
+        "severity": "High",
+        "notes": "These senders typically pass SPF/DKIM/DMARC \u2014 authentication alone is insufficient. Rely on phishScore, URL content, and subject-line keyword analysis.",
+        "false_positive_mitigation": "Maintain allowlist of expected legitimate notifications from these services (e.g., DocuSign envelopes from expected vendors)."
+      },
+      "dmarc_fail_on_owned_domain": {
+        "description": "External receiver reported DMARC failure for your organization's domain \u2014 someone is spoofing or unauthorized sending from your domain.",
+        "event_source": "Email Fraud Defense / DMARC aggregate reports",
+        "logic": "policy_published.domain = owned_domain AND record.row.policy_evaluated.dkim = fail AND record.row.policy_evaluated.spf = fail AND record.row.count > 5",
+        "severity": "High",
+        "notes": "Cross-reference source_ip against known authorized sending sources. Unknown IPs failing DMARC are actively abusing your domain."
+      }
+    },
+    "tuning_guidelines": {
+      "false_positive_reduction": [
+        "Maintain an organizational IP allowlist for senderIP \u2014 exclude corporate mail relay IPs from anomaly rules.",
+        "Build a known-legitimate-sender allowlist for domains that routinely send high phishScores (marketing platforms, notification services).",
+        "Exclude fromAddress domains matching configured partner or vendor domains from BEC/impostor rules.",
+        "For DLP rules, suppress alerts from known automated report-generation service accounts.",
+        "Use quarantineFolder field to confirm action severity \u2014 messages in quarantine were not delivered to user inbox.",
+        "Suppress TRAP retraction alerts for messages where recipient has NOT interacted (no click event, attachment not opened).",
+        "For impostorScore rules, implement a display-name allowlist for recognized executives whose exact names may trigger false positives in legitimate forwarded mail.",
+        "Validate campaignId-based volume rules against newsletter/marketing campaigns \u2014 add sender domain exclusions."
+      ],
+      "false_negative_reduction": [
+        "Monitor for completelyRewritten = false \u2014 URLs not protected by URL Defense represent detection blind spots.",
+        "Correlate clicksPermitted events with subsequent EDR network connection telemetry \u2014 permitted clicks to newly-malicious URLs are high-risk.",
+        "Poll TAP SIEM API at <=60 second intervals \u2014 longer intervals miss real-time threat windows.",
+        "Cover both messagesDelivered AND messagesBlocked \u2014 blocked messages still reveal attack patterns and threat actors.",
+        "Subscribe to TRAP retraction events \u2014 these indicate retrospective detections not captured in initial message events.",
+        "Include messageParts[].sandboxStatus = TIMEOUT as a suspicious indicator, not just THREAT verdicts.",
+        "Track threatStatus field changes from 'active' to 'cleared' \u2014 Proofpoint occasionally updates verdicts; build logic to handle both directions.",
+        "For BEC detection, check BOTH impostorScore >= threshold AND reply-to mismatch independently \u2014 either alone may be sufficient."
+      ],
+      "performance_optimization": [
+        "Index on GUID, QID/queue_id, recipient, senderIP, campaignId, and threatID for fast correlation queries.",
+        "Pre-parse threatsInfoMap array at ingestion time \u2014 explode array into individual rows for efficient threat field filtering.",
+        "Parse messageParts array similarly \u2014 one row per attachment per message for hash-based lookups.",
+        "Build lookup tables: VAP list (from TAP API), known-good sender domains, corporate IP ranges \u2014 join at query time.",
+        "For high-volume environments, create summary indexes: daily sender-recipient pairs, daily phishScore distributions.",
+        "Use campaignId as a deduplication and grouping key \u2014 alerts on campaigns rather than individual messages reduce noise.",
+        "Separate streaming detection (clicksBlocked, delivered malware) from batch analytics (BEC patterns, DLP trends) \u2014 different polling and rule execution cadences."
+      ]
+    },
+    "testing_and_validation": {
+      "pre_deployment_checklist": [
+        "Confirm TAP SIEM API credentials are valid and /v2/siem/all returns data for your tenant.",
+        "Validate field presence: check that threatsInfoMap, messageParts, spf, dkim, dmarc objects are populated in sample data (not all events include all objects).",
+        "Test phishScore, impostorScore, spamScore threshold rules against historical delivered messages \u2014 verify threshold yields acceptable precision.",
+        "Validate GUID uniqueness in your SIEM index \u2014 confirm no duplicate events from polling overlap.",
+        "Test QID correlation between TAP events and PPS syslog (if hybrid deployment) using known test messages.",
+        "Verify array field handling in your SIEM: threatsInfoMap and messageParts are JSON arrays \u2014 confirm parser extracts individual elements.",
+        "Test BEC detection logic against known-good executive emails forwarded through mail flow to confirm no false positives.",
+        "Validate campaignId group-by rules using a historical campaign in TAP Dashboard.",
+        "Confirm TRAP retraction event delivery is configured and test with a simulated retraction.",
+        "Test time zone normalization \u2014 Proofpoint timestamps are UTC; confirm SIEM indexes in UTC or handles offset correctly."
+      ],
+      "api_test_template": {
+        "endpoint": "GET https://tap-api-v2.proofpoint.com/v2/siem/all",
+        "auth": "HTTP Basic (principal:secret)",
+        "parameters": {
+          "format": "JSON",
+          "sinceSeconds": 3600,
+          "threatStatus": "active"
+        },
+        "expected_response_structure": {
+          "queryEndTime": "<ISO8601>",
+          "messagesDelivered": "<array of message events>",
+          "messagesBlocked": "<array of message events>",
+          "clicksBlocked": "<array of click events>",
+          "clicksPermitted": "<array of click events>"
+        },
+        "validation_checks": [
+          "HTTP 200 = valid credentials and active TAP subscription",
+          "HTTP 401 = invalid credentials",
+          "HTTP 403 = insufficient TAP API permissions",
+          "HTTP 429 = rate limit exceeded \u2014 implement 30-60 second polling interval",
+          "Empty arrays are valid \u2014 no threat events in the window",
+          "Verify queryEndTime matches expected polling window end"
+        ]
+      },
+      "sample_siem_queries": {
+        "all_delivered_threats": "eventType = messagesDelivered AND threatsInfoMap[].classification IS NOT NULL | last 24h",
+        "high_phish_delivered": "eventType = messagesDelivered AND phishScore >= 90 | last 24h | sort messageTime desc",
+        "all_user_clicks": "eventType IN [clicksBlocked, clicksPermitted] | last 24h | stats count by recipient, classification",
+        "bec_high_confidence": "eventType = messagesDelivered AND impostorScore >= 0.9 | last 24h",
+        "sandbox_threats_by_family": "messageParts[].sandboxStatus = THREAT | last 7d | stats count by threatsInfoMap[].malwareFamily",
+        "campaign_recipient_spread": "campaignId IS NOT NULL | last 7d | stats count by campaignId, toAddresses | sort count desc",
+        "failed_auth_delivered": "spf.result IN [fail, softfail] AND dkim.result = fail AND dmarc.alignment = fail | last 24h",
+        "trap_retractions_failed": "retraction_status = failure | last 24h"
+      }
+    }
+  },
+  "output_formatting_standards": {
+    "normalized_event_schema": {
+      "description": "Canonical flattened schema for Proofpoint TAP events normalized for SIEM ingestion. All nested objects are flattened with underscore-delimited field names.",
+      "timestamp_format": "ISO 8601 UTC: YYYY-MM-DDTHH:MM:SS.sssZ",
+      "array_handling": "Arrays (threatsInfoMap, messageParts, toAddresses) should be exploded into multi-value fields or stored as JSON strings depending on SIEM platform capabilities.",
+      "null_handling": "Absent fields should be represented as null \u2014 not empty string, 0, or missing key.",
+      "example_normalized_delivered_threat": {
+        "event_id": "b27dbea0-1234-5678-abcd-ef0123456789",
+        "event_type": "messagesDelivered",
+        "event_timestamp": "2024-06-15T14:32:01.000Z",
+        "queue_id": "q1A2B3C4d5E6F",
+        "email_subject": "Urgent: Invoice #INV-20240615 Payment Required",
+        "email_from_address": "billing@invoice-vendor-support.net",
+        "email_to_address": "ap@corp.com",
+        "email_reply_to": "billing@gmail-free.com",
+        "email_envelope_from": "bounce@invoice-vendor-support.net",
+        "src_ip": "198.51.100.45",
+        "email_message_size": 142680,
+        "spam_score": 12,
+        "phish_score": 95,
+        "impostor_score": 0.92,
+        "malware_score": 0,
+        "spam_classification": "phish",
+        "modules_run": [
+          "spam",
+          "urldefense",
+          "impostor"
+        ],
+        "policy_routes": [
+          "default_inbound"
+        ],
+        "completely_rewritten": true,
+        "quarantine_folder": null,
+        "spf_result": "fail",
+        "dkim_result": "none",
+        "dmarc_alignment": "fail",
+        "dmarc_policy": "none",
+        "threat_id": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+        "threat_status": "active",
+        "threat_type": "url",
+        "threat_classification": "phish",
+        "threat_artifact": "https://invoice-vendor-support.net/login",
+        "campaign_id": "c_9a8b7c6d",
+        "malware_family": null,
+        "attack_index_score": 750,
+        "attachment_filename": null,
+        "attachment_sha256": null,
+        "attachment_sandbox_status": null
+      },
+      "example_normalized_click_event": {
+        "event_id": "click_c1d2e3f4-5a6b-7c8d-9e0f-1a2b3c4d5e6f",
+        "event_type": "clicksBlocked",
+        "event_timestamp": "2024-06-15T14:45:33.000Z",
+        "message_id": "b27dbea0-1234-5678-abcd-ef0123456789",
+        "email_sender": "billing@invoice-vendor-support.net",
+        "email_recipient": "ap@corp.com",
+        "url": "https://invoice-vendor-support.net/login",
+        "src_ip": "10.0.1.55",
+        "http_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "threat_id": "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+        "threat_status": "active",
+        "threat_classification": "phish",
+        "campaign_id": "c_9a8b7c6d",
+        "malware_family": null
+      }
+    },
+    "siem_integration_formats": {
+      "splunk_cim_mapping": {
+        "description": "Proofpoint TAP field-to-Splunk CIM Email datamodel mapping. Use with the Splunk Add-on for Proofpoint TAP.",
+        "email_datamodel": {
+          "action": "eventType (map: messagesDelivered\u2192delivered, messagesBlocked\u2192blocked)",
+          "src_user": "sender",
+          "recipient": "toAddresses[0]",
+          "subject": "subject",
+          "size": "messageSize",
+          "message_id": "GUID",
+          "src": "senderIP",
+          "vendor_product": "Proofpoint TAP",
+          "_time": "messageTime"
+        },
+        "threat_datamodel": {
+          "threat_id": "threatsInfoMap[0].threatID",
+          "threat_category": "threatsInfoMap[0].classification",
+          "threat_name": "threatsInfoMap[0].malwareFamily",
+          "file_hash": "messageParts[0].sha256",
+          "url": "threatsInfoMap[0].threat (when threatType=url)"
+        }
+      },
+      "sentinel_schema": {
+        "description": "Microsoft Sentinel table mapping for Proofpoint TAP via the built-in Sentinel connector.",
+        "table": "ProofpointTAP_MessagesDelivered_CL",
+        "key_fields": {
+          "TimeGenerated": "messageTime",
+          "EventType_s": "eventType",
+          "SenderIP_s": "senderIP",
+          "SrcUser_s": "sender",
+          "DstUser_s": "toAddresses[0]",
+          "Subject_s": "subject",
+          "PhishScore_i": "phishScore",
+          "ImpostorScore_d": "impostorScore",
+          "Classification_s": "threatsInfoMap[0].classification",
+          "ThreatID_s": "threatsInfoMap[0].threatID",
+          "CampaignID_s": "threatsInfoMap[0].campaignId",
+          "MalwareFamily_s": "threatsInfoMap[0].malwareFamily",
+          "SHA256_s": "messageParts[0].sha256",
+          "GUID_g": "GUID"
+        }
+      },
+      "qradar_dsm_mapping": {
+        "description": "IBM QRadar DSM mapping for Proofpoint TAP syslog.",
+        "log_source_type": "Proofpoint Enterprise Protection",
+        "key_mappings": {
+          "EventId": "GUID",
+          "StartTime": "messageTime",
+          "EventName": "spamClassification",
+          "SourceIP": "senderIP",
+          "SourceUserIdentity": "sender",
+          "DestinationUserIdentity": "toAddresses[0]",
+          "Message": "subject",
+          "Relevance": "phishScore (normalized 0-10)"
+        }
+      },
+      "cef_format": {
+        "description": "Common Event Format for syslog-based delivery.",
+        "header": "CEF:0|Proofpoint|Proofpoint TAP|1.0|<spamClassification>|<subject>|<severity_int>|",
+        "severity_mapping": {
+          "phishScore >= 90": 9,
+          "phishScore 70-89": 7,
+          "phishScore 50-69": 5,
+          "phishScore < 50": 3,
+          "impostorScore >= 0.9": 10,
+          "sandboxStatus = THREAT": 10
+        },
+        "extensions": {
+          "deviceVendor": "Proofpoint",
+          "deviceProduct": "Proofpoint TAP",
+          "deviceVersion": "2.0",
+          "deviceEventClassId": "spamClassification",
+          "name": "subject",
+          "src": "senderIP",
+          "suser": "sender",
+          "duser": "toAddresses[0]",
+          "requestUrl": "threatsInfoMap[0].threat (url type)",
+          "fileHash": "messageParts[0].sha256",
+          "msg": "subject",
+          "start": "messageTime",
+          "cs1": "threatsInfoMap[0].classification",
+          "cs1Label": "threatClassification",
+          "cs2": "threatsInfoMap[0].malwareFamily",
+          "cs2Label": "malwareFamily",
+          "cs3": "threatsInfoMap[0].campaignId",
+          "cs3Label": "campaignId",
+          "cs4": "GUID",
+          "cs4Label": "proofpointGUID",
+          "cn1": "phishScore",
+          "cn1Label": "phishScore",
+          "cn2": "impostorScore",
+          "cn2Label": "impostorScore"
+        }
+      }
+    },
+    "severity_normalization": {
+      "description": "Standard severity mapping from Proofpoint scores to alert severity levels.",
+      "phish_score": {
+        "90-100": "Critical",
+        "70-89": "High",
+        "50-69": "Medium",
+        "0-49": "Low"
+      },
+      "impostor_score": {
+        "0.9-1.0": "Critical",
+        "0.7-0.89": "High",
+        "0.5-0.69": "Medium"
+      },
+      "event_type_base_severity": {
+        "clicksBlocked (malware classification)": "Critical",
+        "clicksBlocked (phish classification)": "High",
+        "clicksPermitted (any threat classification)": "Critical",
+        "messagesDelivered (sandboxStatus=THREAT)": "Critical",
+        "messagesDelivered (phishScore>=90)": "Critical",
+        "messagesDelivered (impostorScore>=0.9)": "Critical",
+        "messagesBlocked (sandboxStatus=THREAT)": "High",
+        "trap_retraction_failure": "High"
+      }
+    },
+    "report_output_standards": {
+      "threat_summary_report": {
+        "required_columns": [
+          "event_timestamp",
+          "email_from",
+          "email_to",
+          "threat_classification",
+          "malware_family",
+          "phish_score",
+          "event_type",
+          "campaign_id",
+          "sandbox_status"
+        ],
+        "sort_default": "phish_score desc",
+        "filter": "eventType = messagesDelivered AND threatsInfoMap IS NOT NULL"
+      },
+      "click_activity_report": {
+        "required_columns": [
+          "click_timestamp",
+          "recipient",
+          "url",
+          "click_ip",
+          "user_agent",
+          "classification",
+          "event_type",
+          "campaign_id"
+        ],
+        "sort_default": "click_timestamp desc",
+        "filter": "eventType IN [clicksBlocked, clicksPermitted]"
+      },
+      "bec_indicators_report": {
+        "required_columns": [
+          "event_timestamp",
+          "from_address",
+          "reply_to_address",
+          "envelope_from",
+          "recipient",
+          "impostor_score",
+          "subject",
+          "spf_result",
+          "dkim_result"
+        ],
+        "sort_default": "impostor_score desc",
+        "filter": "impostorScore >= 0.5"
+      },
+      "campaign_exposure_report": {
+        "required_columns": [
+          "campaign_id",
+          "threat_classification",
+          "malware_family",
+          "recipient_count",
+          "delivered_count",
+          "blocked_count",
+          "click_count"
+        ],
+        "sort_default": "recipient_count desc",
+        "grouping": "campaign_id"
+      }
+    }
+  },
+  "constraints_and_limitations": {
+    "tap_api_constraints": {
+      "polling_rate_limit": {
+        "description": "TAP SIEM API enforces per-principal rate limits.",
+        "default_limit": "1 request per 30 seconds per API principal",
+        "max_window_per_request": "sinceSeconds maximum value: 3600 (1 hour)",
+        "burst_behavior": "HTTP 429 returned when limit exceeded. Implement exponential backoff.",
+        "recommendation": "Poll every 60 seconds with sinceSeconds=120 (2x window for overlap tolerance) to avoid event loss at boundaries."
+      },
+      "event_latency": {
+        "description": "There is inherent latency between when a message is processed and when it appears in the TAP SIEM API.",
+        "typical_latency": "2\u201310 minutes for most events",
+        "sandbox_latency": "Sandbox verdicts may arrive 5\u201330 minutes after message delivery. DELIVERED events may appear in API before sandbox verdict is known.",
+        "retrospective_verdict_handling": "Monitor for threatStatus field changes. A message initially appearing without threatsInfoMap may later have threats added when sandbox completes.",
+        "detection_implication": "Build SIEM logic to handle late-arriving sandbox verdicts \u2014 query for messagesDelivered events where messageParts[].sandboxStatus changes to THREAT."
+      },
+      "data_retention_in_api": {
+        "description": "TAP SIEM API only returns events within a rolling window.",
+        "max_sinceSeconds": 3600,
+        "max_sinceTime_lookback": "Events older than approximately 12 hours may not be available via sinceSeconds. Use sinceTime parameter for precise historical queries.",
+        "long_term_storage": "All events must be persisted by the SIEM. Proofpoint does not provide a long-term historical API beyond the TAP Dashboard UI."
+      },
+      "field_population_variability": {
+        "description": "Not all fields are populated for every event. Detection rules must handle absent/null fields.",
+        "always_present": [
+          "GUID",
+          "messageTime",
+          "spamScore",
+          "phishScore",
+          "impostorScore",
+          "fromAddress",
+          "toAddresses",
+          "sender",
+          "senderIP"
+        ],
+        "conditionally_present": [
+          "threatsInfoMap \u2014 only populated when threats are detected",
+          "messageParts \u2014 only populated when attachments or sandbox-analyzed URLs are present",
+          "campaignId \u2014 only populated when threat is part of a tracked campaign",
+          "malwareFamily \u2014 only populated when malware is identified",
+          "quarantineFolder \u2014 only populated when message is quarantined",
+          "spf, dkim, dmarc \u2014 populated when authentication checks are run (may be absent for internal relay)"
+        ]
+      },
+      "array_fields_complexity": {
+        "description": "threatsInfoMap and messageParts are JSON arrays. A single message may have multiple threats (e.g., malicious URL + malicious attachment) and multiple attachments.",
+        "parsing_requirement": "SIEM parsers must handle multi-element arrays. Naive field extraction of threatsInfoMap[0] will miss threats on multi-threat messages.",
+        "recommendation": "Explode arrays at ingestion time \u2014 create one index record per threat per message and one per attachment per message."
+      },
+      "no_message_body": {
+        "description": "TAP SIEM API does NOT provide message body content. Only metadata, headers, URLs, and attachment hashes are available.",
+        "implication": "Full message body analysis requires integration with O365 or Google Workspace APIs, or forensic retrieval via Proofpoint's message store (where configured).",
+        "available_fields_for_content_analysis": [
+          "subject",
+          "messageParts[].filename",
+          "threatsInfoMap[].threat (URL)",
+          "fromAddress",
+          "replyToAddress"
+        ]
+      },
+      "subject_truncation": {
+        "description": "Email subject line may be truncated to 500 characters in TAP API output. Very long subjects are cut.",
+        "implication": "Substring-based subject matching rules should not rely on content beyond ~400 characters."
+      },
+      "click_ip_attribution": {
+        "description": "clickIP in click events may reflect the user's workstation IP, a proxy IP, or a cloud email scanning service IP \u2014 not always the actual end-user device.",
+        "implication": "Do not exclusively rely on clickIP for user-to-endpoint attribution. Correlate with endpoint telemetry (EDR, proxy logs) for confirmed user-machine mapping.",
+        "known_proxy_ips": "Proofpoint Safe Messaging click-checking infrastructure has its own IP ranges \u2014 some clicksPermitted may show Proofpoint's own click-checking IPs."
+      },
+      "completelyrRewritten_caveat": {
+        "description": "completelyRewritten = true does not guarantee all URLs were rendered safe. URL Defense cannot rewrite URLs in encrypted/password-protected attachments, image-based text, or certain HTML encoding schemes.",
+        "implication": "Treat completelyRewritten = false as a detection gap indicator \u2014 some URLs are unmonitored."
+      }
+    },
+    "syslog_constraints": {
+      "no_year_in_timestamp": {
+        "description": "Standard syslog (RFC 3164) does not include year in timestamps (Mon DD HH:MM:SS).",
+        "fix": "SIEM must inject year at collection time or use RFC 5424 syslog format (requires PPS configuration).",
+        "implication": "Year-end log parsing errors can cause spurious 11-month-old event timestamps if not handled."
+      },
+      "multiline_events": {
+        "description": "Long PPS filter decisions may span multiple syslog lines (line continuation). Parser must handle line-joining.",
+        "affected_fields": [
+          "subject (long subjects)",
+          "URL (long URLs)",
+          "filter decision details"
+        ]
+      },
+      "no_structured_json_by_default": {
+        "description": "PPS syslog output is free-form text, not JSON. Field extraction requires regex-based parsing.",
+        "recommendation": "Use PPS syslog configuration to enable structured JSON output where supported (newer PPS versions). Reduces parser maintenance burden."
+      },
+      "queue_id_rollover": {
+        "description": "Sendmail queue IDs are not globally unique \u2014 they roll over on appliance restart. Use hostname+queueid as composite key for reliable correlation.",
+        "siem_key": "Concatenate: hostname + '_' + queueid for unique event reference"
+      }
+    },
+    "general_detection_limitations": {
+      "no_post_delivery_url_content": {
+        "description": "Once a URL is allowed through URL Defense, Proofpoint does not provide the destination page content \u2014 only the URL itself. Actual credential submission or malware download is not confirmed by Proofpoint alone.",
+        "mitigation": "Correlate with proxy logs, browser isolation telemetry, or EDR network connection data for post-click analysis."
+      },
+      "sandbox_evasion": {
+        "description": "Sophisticated malware may evade TAP sandbox through: time delays, environment fingerprinting, user interaction requirements, encrypted payloads, or living-off-the-land techniques.",
+        "implication": "sandboxStatus = CLEAN does not guarantee a file is safe. Maintain multi-layer detection: sandbox + EDR + network.",
+        "indicator_fields": [
+          "messageParts[].sandboxStatus = TIMEOUT",
+          "messageParts[].sandboxStatus = UNSUPPORTED"
+        ]
+      },
+      "bec_no_url_no_attachment": {
+        "description": "Pure BEC messages contain no URLs and no attachments \u2014 they rely entirely on social engineering. TAP sandbox and URL Defense provide no signal.",
+        "primary_detection_reliance": [
+          "impostorScore",
+          "spf/dkim/dmarc failures",
+          "replyToAddress mismatch",
+          "subject keyword matching",
+          "sender domain lookalike analysis"
+        ],
+        "gap": "impostorScore is a probabilistic signal \u2014 some sophisticated BEC passes all authentication and scores below threshold."
+      },
+      "internal_mail_not_inspected": {
+        "description": "In most deployments, messages sent between internal users (intra-domain) do not pass through Proofpoint and are not visible in TAP telemetry.",
+        "implication": "Internally-originated phishing (compromised internal account) is not detected by Proofpoint alone. Requires email security rules in O365/Google Workspace or inbox-level scanning.",
+        "exceptions": [
+          "O365 and Google Workspace connectors that route all mail including internal through Proofpoint (rare)"
+        ]
+      },
+      "retroactive_threat_updates": {
+        "description": "Proofpoint updates threat verdicts retroactively (zero-hour updates). A message initially classified as clean may be updated to malicious hours later.",
+        "detection_requirement": "SIEM logic must re-evaluate delivered messages when threatsInfoMap is added to a previously clean event. Requires event-update awareness or periodic re-polling.",
+        "api_behavior": "Updated events appear in the TAP SIEM API at their original messageTime but with updated threat data \u2014 deduplication by GUID may cause updated records to be dropped."
+      },
+      "encrypted_email": {
+        "description": "S/MIME or PGP encrypted email cannot be inspected by Proofpoint (content is encrypted before delivery). Only envelope-level metadata is available.",
+        "implication": "Zero detection capability for content inside encrypted email. Authentication and sender reputation analysis still apply."
+      }
+    }
+  },
+  "reference_quick_cards": {
+    "tap_api_cheatsheet": {
+      "all_events": "GET /v2/siem/all?format=JSON&sinceSeconds=3600",
+      "messages_only": "GET /v2/siem/messages/delivered?format=JSON&sinceSeconds=3600",
+      "clicks_only": "GET /v2/siem/clicks/blocked?format=JSON&sinceSeconds=3600",
+      "active_threats_only": "GET /v2/siem/all?format=JSON&sinceSeconds=3600&threatStatus=active",
+      "campaign_details": "GET /v2/campaign/{campaignId}",
+      "vap_list": "GET /v2/people/vap",
+      "threat_summary": "GET /v2/threat/summary"
+    },
+    "score_thresholds_reference": {
+      "phishScore": {
+        "critical_alert": ">=90",
+        "high_alert": ">=70",
+        "medium_alert": ">=50",
+        "investigate": ">=30"
+      },
+      "impostorScore": {
+        "critical_alert": ">=0.9",
+        "high_alert": ">=0.7",
+        "medium_alert": ">=0.5"
+      },
+      "spamScore": {
+        "definite_spam": ">=90",
+        "likely_spam": ">=70",
+        "suspicious": ">=50"
+      },
+      "malwareScore": {
+        "critical_alert": ">=90"
+      }
+    },
+    "event_type_reference": {
+      "messagesDelivered": "Message passed filtering and was delivered to recipient inbox.",
+      "messagesBlocked": "Message was quarantined, discarded, or blocked before delivery.",
+      "clicksBlocked": "User clicked a URL rewritten by URL Defense; click was blocked at click-time.",
+      "clicksPermitted": "User clicked a URL rewritten by URL Defense; click was allowed to proceed."
+    },
+    "sandbox_status_reference": {
+      "CLEAN": "No threats detected by sandbox.",
+      "THREAT": "Malicious behavior confirmed by sandbox analysis.",
+      "TIMEOUT": "Sandbox analysis did not complete within the allotted time \u2014 potentially evasive malware.",
+      "ERROR": "Sandbox analysis failed due to technical error.",
+      "UNSUPPORTED": "File type not supported by sandbox.",
+      "ZAPPED": "Message retracted by TRAP before sandbox completed.",
+      "UNKNOWN": "Sandbox status undetermined."
+    },
+    "threat_classification_reference": {
+      "phish": "Credential phishing \u2014 designed to steal user credentials.",
+      "malware": "Malware delivery \u2014 attachment or URL delivers malicious code.",
+      "spam": "Unsolicited bulk email \u2014 no specific threat beyond annoyance.",
+      "impostor": "Business Email Compromise \u2014 impersonating a trusted party.",
+      "bec": "Business Email Compromise \u2014 financial fraud focus.",
+      "ransomware": "Ransomware delivery \u2014 subset of malware with encryption payload.",
+      "apt": "Advanced Persistent Threat \u2014 nation-state or sophisticated targeted attack."
+    },
+    "critical_detection_event_priority": {
+      "P1_immediate": [
+        "clicksPermitted with any threat classification",
+        "messagesDelivered with sandboxStatus = THREAT",
+        "messagesDelivered with impostorScore >= 0.9 targeting finance or executive",
+        "messagesDelivered with malwareFamily in [Cobalt Strike, Emotet, QakBot, IcedID]"
+      ],
+      "P2_high": [
+        "clicksBlocked",
+        "messagesDelivered with phishScore >= 90",
+        "messagesDelivered with spf + dkim + dmarc all failing",
+        "TRAP retraction failure",
+        "Phishing from legitimate service (DocuSign, SharePoint)",
+        "High-volume campaign against multiple recipients"
+      ],
+      "P3_medium": [
+        "messagesDelivered with phishScore 70-89",
+        "messagesDelivered with impostorScore 0.7-0.89",
+        "messageParts[].sandboxStatus = TIMEOUT on high-risk file type",
+        "messagesDelivered with replyTo mismatch (impostorScore 0.5-0.69)",
+        "DLP outbound block to personal email domain"
+      ]
+    }
+  },
+  "mitre_attack_mapping": {
+    "description": "MITRE ATT&CK technique mappings to Proofpoint detection patterns for email-based threat coverage tracking.",
+    "mappings": [
+      {
+        "technique_id": "T1566.001",
+        "technique": "Phishing: Spearphishing Attachment",
+        "tactic": "Initial Access",
+        "proofpoint_signals": [
+          "messageParts[].sandboxStatus = THREAT",
+          "messageParts[].malwareFamily",
+          "messageParts[].sha256"
+        ],
+        "detection_rule": "eventType = messagesDelivered AND messageParts[].sandboxStatus = THREAT",
+        "notes": "SHA256 from messageParts correlates with EDR file creation events."
+      },
+      {
+        "technique_id": "T1566.002",
+        "technique": "Phishing: Spearphishing Link",
+        "tactic": "Initial Access",
+        "proofpoint_signals": [
+          "threatsInfoMap[].classification = phish",
+          "threatsInfoMap[].threat (URL)",
+          "clicksBlocked",
+          "clicksPermitted"
+        ],
+        "detection_rule": "eventType = clicksBlocked OR (eventType = messagesDelivered AND phishScore >= 90)",
+        "notes": "clicksPermitted with phish classification = user potentially submitted credentials."
+      },
+      {
+        "technique_id": "T1566.003",
+        "technique": "Phishing: Spearphishing via Service",
+        "tactic": "Initial Access",
+        "proofpoint_signals": [
+          "sender domain = legitimate service (docusign.com, sharepoint)",
+          "phishScore >= 60"
+        ],
+        "detection_rule": "phishScore >= 60 AND sender domain in [docusign.com, dropbox.com, wetransfer.com, drive.google.com]",
+        "notes": "Service abuse bypasses sender reputation checks \u2014 rely on URL analysis and phishScore."
+      },
+      {
+        "technique_id": "T1534",
+        "technique": "Internal Spearphishing",
+        "tactic": "Lateral Movement",
+        "proofpoint_signals": "Limited \u2014 internal mail typically not inspected by Proofpoint",
+        "notes": "Gap in Proofpoint coverage. Supplement with O365 or Google Workspace native protection."
+      },
+      {
+        "technique_id": "T1598.002",
+        "technique": "Phishing for Information: Spearphishing Attachment",
+        "tactic": "Reconnaissance",
+        "proofpoint_signals": [
+          "phishScore",
+          "threatsInfoMap[].classification"
+        ],
+        "detection_rule": "phishScore >= 70 AND eventType = messagesDelivered"
+      },
+      {
+        "technique_id": "T1059.001",
+        "technique": "Command and Scripting Interpreter: PowerShell",
+        "tactic": "Execution",
+        "proofpoint_signals": [
+          "messageParts[].contentType = application/x-powershell",
+          "messageParts[].filename ends in .ps1",
+          "malwareFamily"
+        ],
+        "detection_rule": "messageParts[].filename ends_with \".ps1\" OR messageParts[].filename ends_with \".vbs\" AND eventType = messagesDelivered",
+        "notes": "Script attachments delivered via email are high-risk execution vectors."
+      },
+      {
+        "technique_id": "T1114.001",
+        "technique": "Email Collection: Local Email Collection",
+        "tactic": "Collection",
+        "proofpoint_signals": "Limited \u2014 credential phishing leading to email collection is detectable via clicksPermitted + credential submission",
+        "notes": "Correlate clicksPermitted (phish) with subsequent Office 365 or Google Workspace anomalous email forwarding rules."
+      },
+      {
+        "technique_id": "T1078",
+        "technique": "Valid Accounts",
+        "tactic": "Initial Access, Persistence",
+        "proofpoint_signals": [
+          "impostorScore >= 0.9 (BEC targeting credential gathering)",
+          "phishing delivery of credential harvesting pages"
+        ],
+        "detection_rule": "impostorScore >= 0.9 AND eventType = messagesDelivered"
+      },
+      {
+        "technique_id": "T1204.001",
+        "technique": "User Execution: Malicious Link",
+        "tactic": "Execution",
+        "proofpoint_signals": [
+          "clicksPermitted",
+          "clicksBlocked"
+        ],
+        "detection_rule": "eventType = clicksPermitted AND threatsInfoMap[].classification in [malware, phish]",
+        "notes": "clicksPermitted is the highest-fidelity signal for user execution of email-delivered threats."
+      },
+      {
+        "technique_id": "T1204.002",
+        "technique": "User Execution: Malicious File",
+        "tactic": "Execution",
+        "proofpoint_signals": [
+          "messageParts[].sandboxStatus = THREAT",
+          "messageParts[].sha256 matched in EDR"
+        ],
+        "detection_rule": "messageParts[].sandboxStatus = THREAT AND eventType = messagesDelivered",
+        "notes": "SHA256 correlation with EDR process creation confirms user opened the attachment."
+      },
+      {
+        "technique_id": "T1657",
+        "technique": "Financial Theft (BEC)",
+        "tactic": "Impact",
+        "proofpoint_signals": [
+          "impostorScore >= 0.9",
+          "replyToAddress mismatch",
+          "subject keywords: wire, invoice, payment"
+        ],
+        "detection_rule": "impostorScore >= 0.9 OR (replyToAddress domain != fromAddress domain AND impostorScore >= 0.5)",
+        "notes": "BEC financial fraud \u2014 highest business impact email threat."
+      }
+    ]
+  }
+}

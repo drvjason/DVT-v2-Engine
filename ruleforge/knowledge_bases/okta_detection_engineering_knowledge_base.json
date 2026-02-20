@@ -1,0 +1,2541 @@
+{
+  "metadata": {
+    "title": "Okta Detection Engineering Knowledge Base",
+    "version": "2.0",
+    "purpose": "Comprehensive reference for detection engineering, rule development, testing, and validation of Okta System Log-based detection logic across SIEM, SOAR, and native Okta policy enforcement.",
+    "last_updated": "2025-02",
+    "maintainer": "Detection Engineering Team",
+    "platform_version_notes": "Covers both Okta Classic Engine and Okta Identity Engine (OIE). OIE-specific behaviors are noted where applicable.",
+    "tags": [
+      "okta",
+      "iam",
+      "detection-engineering",
+      "system-log",
+      "identity-security",
+      "knowledge-base"
+    ],
+    "schema_version": "1.0",
+    "kb_updated_at": "2025-01-01"
+  },
+  "platform_architecture": {
+    "overview": {
+      "description": "Okta is a cloud-native Identity and Access Management (IAM) platform providing Single Sign-On (SSO), Multi-Factor Authentication (MFA), Lifecycle Management, and API security. It acts as the identity control plane for cloud, on-prem, and hybrid environments. All authentication, authorization, and identity lifecycle events are captured in the Okta System Log \u2014 the primary telemetry source for detection engineering.",
+      "tenant_model": {
+        "description": "Each organization receives a dedicated Okta tenant (subdomain: org.okta.com). Tenants are logically isolated. Preview (staging) and Production environments are separate tenants.",
+        "engine_variants": [
+          {
+            "name": "Okta Classic Engine",
+            "description": "Legacy authentication pipeline. Sign-On Policies and MFA Enrollment Policies are evaluated independently.",
+            "status": "Maintenance mode \u2014 new features exclusive to OIE"
+          },
+          {
+            "name": "Okta Identity Engine (OIE)",
+            "description": "Modern, flexible authentication pipeline using policy-driven flows with authenticators. Supports passwordless, device assurance, and granular contextual access policies.",
+            "status": "Current standard \u2014 required for new feature access"
+          }
+        ]
+      }
+    },
+    "core_components": {
+      "universal_directory": {
+        "description": "Okta's cloud directory stores user profiles, group memberships, and attribute schemas. Supports LDAP/AD synchronization via Okta AD Agent and SCIM-based HR integrations (Workday, BambooHR).",
+        "key_entities": [
+          "Users",
+          "Groups",
+          "Applications",
+          "Devices",
+          "Authenticators"
+        ],
+        "profile_sources": [
+          "Okta (master)",
+          "Active Directory",
+          "LDAP",
+          "HR System (SCIM)",
+          "Custom SCIM"
+        ]
+      },
+      "single_sign_on": {
+        "description": "Okta acts as Identity Provider (IdP) for SAML 2.0, OIDC/OAuth 2.0, and WS-Federation. Integrates with 7,000+ apps via the Okta Integration Network (OIN).",
+        "protocols": [
+          "SAML 2.0",
+          "OIDC",
+          "OAuth 2.0",
+          "WS-Federation",
+          "SWA (Secure Web Authentication)"
+        ],
+        "key_event_types": [
+          "user.authentication.sso",
+          "app.auth.sso",
+          "user.session.start"
+        ]
+      },
+      "adaptive_mfa": {
+        "description": "Risk-based MFA enforcement using Okta ThreatInsight, device context, network zone, and behavioral signals.",
+        "authenticator_types": [
+          "Okta Verify (Push, TOTP)",
+          "Google Authenticator",
+          "Hardware Token (HOTP/TOTP)",
+          "WebAuthn/FIDO2",
+          "Smart Card / PIV",
+          "Email Magic Link",
+          "SMS/Voice OTP",
+          "Password",
+          "Security Question",
+          "Custom RADIUS"
+        ],
+        "risk_signals": [
+          "IP Reputation (ThreatInsight)",
+          "Impossible Travel",
+          "New Device",
+          "Network Zone",
+          "Device Trust",
+          "User Behavior (Okta AI)"
+        ]
+      },
+      "lifecycle_management": {
+        "description": "Automates user provisioning and deprovisioning via SCIM, LDAP, or Okta Workflows. Manages joiner-mover-leaver processes.",
+        "key_event_types": [
+          "user.lifecycle.create",
+          "user.lifecycle.activate",
+          "user.lifecycle.deactivate",
+          "user.lifecycle.delete.initiated",
+          "user.lifecycle.suspend"
+        ]
+      },
+      "api_access_management": {
+        "description": "Okta acts as OAuth 2.0 Authorization Server for API protection. Issues access, refresh, and ID tokens.",
+        "key_event_types": [
+          "app.oauth2.token.grant",
+          "app.oauth2.token.revoke",
+          "app.oauth2.authorize.code.grant"
+        ]
+      },
+      "okta_workflows": {
+        "description": "No-code automation platform for identity orchestration. Connects Okta events to downstream actions in third-party systems.",
+        "detection_relevance": "Workflow modifications can indicate privileged access abuse or persistence mechanisms."
+      },
+      "privileged_access": {
+        "description": "Okta Privileged Access Management (PAM) \u2014 formerly Advanced Server Access (ASA). Provides zero-trust SSH/RDP access to servers with ephemeral certificates.",
+        "key_event_types": [
+          "access.request.approve",
+          "access.request.deny",
+          "server.access.initiate"
+        ]
+      },
+      "okta_devices": {
+        "description": "Device Trust and Device Assurance enforce security posture requirements on endpoints before granting access. Integrates with MDM (Intune, Jamf) and EDR.",
+        "device_states": [
+          "Managed",
+          "Unmanaged",
+          "Compliant",
+          "Not Compliant",
+          "Registered",
+          "Unregistered"
+        ]
+      }
+    },
+    "system_log": {
+      "description": "The Okta System Log is the authoritative audit trail for all identity events. It is the primary data source for detection, threat hunting, and compliance reporting.",
+      "api_endpoint": "GET /api/v1/logs",
+      "retention": {
+        "default": "90 days",
+        "extended": "Up to 3 years with Okta Log Streaming or Data Governance add-on",
+        "note": "Events older than retention window are permanently deleted."
+      },
+      "delivery_mechanisms": [
+        {
+          "mechanism": "API Polling",
+          "description": "Pull events via GET /api/v1/logs using since/until timestamps or cursor-based pagination.",
+          "latency": "Near real-time (~5\u201330 seconds)"
+        },
+        {
+          "mechanism": "Log Streaming (EventBridge / Splunk HEC)",
+          "description": "Push-based delivery to AWS EventBridge or Splunk. Lower latency than polling.",
+          "latency": "Seconds",
+          "note": "Requires Log Streaming feature entitlement."
+        },
+        {
+          "mechanism": "Event Hooks",
+          "description": "HTTP webhook delivery of events to custom endpoints filtered by event type.",
+          "latency": "Near real-time",
+          "limitations": "Requires event hook configuration; not suitable for high-volume ingestion."
+        },
+        {
+          "mechanism": "SIEM Integrations",
+          "description": "Pre-built connectors for Splunk, Microsoft Sentinel, IBM QRadar, CrowdStrike LogScale, and others via Okta App Catalog.",
+          "latency": "Varies by integration"
+        }
+      ]
+    },
+    "network_zones": {
+      "description": "IP allowlists and blocklists that can be referenced in sign-on policies for contextual access control.",
+      "zone_types": [
+        "IP Zone (CIDR ranges)",
+        "Dynamic Zone (IP reputation via ThreatInsight)",
+        "Blocklist Zone"
+      ]
+    },
+    "threatinsight": {
+      "description": "Okta's shared threat intelligence service. Aggregates suspicious IP signals across all Okta tenants and automatically challenges or blocks known malicious IPs.",
+      "modes": [
+        "Audit (log only)",
+        "Block and Audit"
+      ],
+      "signal_types": [
+        "Known proxy/VPN",
+        "Botnet IPs",
+        "Credential stuffing sources",
+        "Impossible travel"
+      ]
+    },
+    "detection_architecture": {
+      "primary_sources": [
+        "Okta System Log (/api/v1/logs)",
+        "Okta Identity Risk Score (OIE only)",
+        "ThreatInsight signals (securityContext fields)",
+        "Device Trust signals (device fields)",
+        "Okta Workflow execution logs"
+      ],
+      "policy_enforcement_points": [
+        "Global Session Policy",
+        "Authentication Policy (OIE) / Sign-On Policy (Classic)",
+        "MFA Enrollment Policy",
+        "Password Policy",
+        "App Sign-On Policy",
+        "Okta Admin Roles (RBAC)"
+      ]
+    }
+  },
+  "okta_query_language": {
+    "overview": {
+      "description": "Okta System Log queries use a SCIM 2.0-inspired filter syntax applied to the GET /api/v1/logs API endpoint. Filters are applied via the 'filter' query parameter. Okta also supports a keyword search via the 'q' parameter, ISO 8601 time bounds via 'since' and 'until', and Expression Language (EL) for policy conditions.",
+      "filter_parameter": "filter",
+      "search_parameter": "q",
+      "time_parameters": [
+        "since (ISO 8601)",
+        "until (ISO 8601)"
+      ],
+      "case_sensitivity": "Filter attribute paths are case-sensitive. String values in eq/ne comparisons are case-sensitive. Use sw/co for partial matching.",
+      "encoding": "Filter expressions must be URL-encoded when used in GET requests."
+    },
+    "filter_syntax": {
+      "basic_structure": "<attribute_path> <operator> \"<value>\"",
+      "compound_structure": "(<expression>) and|or (<expression>)",
+      "examples": [
+        "eventType eq \"user.session.start\"",
+        "outcome.result eq \"FAILURE\" and eventType eq \"user.authentication.sso\"",
+        "actor.id eq \"00u1ab2cd3EF4GH5IJ6K\" and severity eq \"WARN\""
+      ]
+    },
+    "operators": {
+      "comparison": [
+        {
+          "operator": "eq",
+          "description": "Equals. Exact, case-sensitive match.",
+          "example": "eventType eq \"user.session.start\"",
+          "supported_types": [
+            "string",
+            "boolean"
+          ]
+        },
+        {
+          "operator": "ne",
+          "description": "Not equal.",
+          "example": "outcome.result ne \"SUCCESS\"",
+          "supported_types": [
+            "string"
+          ]
+        },
+        {
+          "operator": "lt",
+          "description": "Less than. Used on datetime fields.",
+          "example": "published lt \"2024-01-01T00:00:00Z\"",
+          "supported_types": [
+            "datetime"
+          ]
+        },
+        {
+          "operator": "gt",
+          "description": "Greater than. Used on datetime fields.",
+          "example": "published gt \"2024-01-01T00:00:00Z\"",
+          "supported_types": [
+            "datetime"
+          ]
+        },
+        {
+          "operator": "le",
+          "description": "Less than or equal to.",
+          "example": "published le \"2024-12-31T23:59:59Z\"",
+          "supported_types": [
+            "datetime"
+          ]
+        },
+        {
+          "operator": "ge",
+          "description": "Greater than or equal to.",
+          "example": "published ge \"2024-01-01T00:00:00Z\"",
+          "supported_types": [
+            "datetime"
+          ]
+        },
+        {
+          "operator": "sw",
+          "description": "Starts with. Substring match from beginning of string.",
+          "example": "eventType sw \"user.authentication\"",
+          "supported_types": [
+            "string"
+          ]
+        },
+        {
+          "operator": "co",
+          "description": "Contains. Substring match anywhere in string.",
+          "example": "displayMessage co \"password\"",
+          "supported_types": [
+            "string"
+          ],
+          "performance_note": "co is slower than eq or sw \u2014 avoid on high-cardinality fields in production."
+        },
+        {
+          "operator": "pr",
+          "description": "Present (field exists and is not null).",
+          "example": "actor.id pr",
+          "supported_types": [
+            "any"
+          ]
+        }
+      ],
+      "logical": [
+        {
+          "operator": "and",
+          "description": "Both conditions must be true.",
+          "example": "eventType eq \"user.session.start\" and outcome.result eq \"FAILURE\""
+        },
+        {
+          "operator": "or",
+          "description": "Either condition must be true.",
+          "example": "eventType eq \"user.session.start\" or eventType eq \"user.authentication.sso\"",
+          "note": "or is supported but may significantly impact query performance. Use with care."
+        },
+        {
+          "operator": "not",
+          "description": "Negates a condition. Use parentheses.",
+          "example": "not (outcome.result eq \"SUCCESS\")"
+        }
+      ],
+      "grouping": {
+        "description": "Parentheses control logical precedence. Required when mixing 'and' with 'or'.",
+        "example": "(eventType eq \"user.session.start\" or eventType eq \"user.authentication.sso\") and outcome.result eq \"FAILURE\"",
+        "notes": "Always use parentheses around OR expressions when combining with AND to avoid ambiguous evaluation."
+      }
+    },
+    "time_parameters": {
+      "since": {
+        "description": "Return events published at or after this timestamp. ISO 8601 format.",
+        "format": "YYYY-MM-DDTHH:MM:SS.sssZ",
+        "example": "since=2024-06-01T00:00:00.000Z",
+        "notes": "Mutually exclusive with 'after' cursor parameter. Use 'since' for absolute time windows, 'after' for cursor-based pagination."
+      },
+      "until": {
+        "description": "Return events published before this timestamp.",
+        "format": "YYYY-MM-DDTHH:MM:SS.sssZ",
+        "example": "until=2024-06-30T23:59:59.000Z"
+      },
+      "after": {
+        "description": "Cursor for pagination. Value from the 'next' Link header in a previous response.",
+        "notes": "Cannot be combined with 'since'/'until'. Used only for pagination."
+      }
+    },
+    "search_parameter": {
+      "q": {
+        "description": "Free-text keyword search across displayMessage, eventType, actor.displayName, target.displayName, and client fields.",
+        "example": "q=user.authentication.sso",
+        "limitations": [
+          "Cannot be combined with 'filter' parameter in the same request.",
+          "Less precise than filter \u2014 may return unexpected results.",
+          "Performance is inferior to structured filter queries.",
+          "Not suitable for production detection rules \u2014 use 'filter' exclusively."
+        ]
+      }
+    },
+    "pagination": {
+      "method": "Link header cursor pagination",
+      "page_size_param": "limit",
+      "max_page_size": 1000,
+      "default_page_size": 100,
+      "cursor_field": "after",
+      "link_header": "Link: <https://tenant.okta.com/api/v1/logs?after=...>; rel=\"next\"",
+      "implementation_notes": [
+        "Always follow the 'next' Link header for pagination rather than constructing since/until manually.",
+        "The 'after' cursor value encodes the last event's UUID and timestamp \u2014 do not manipulate it.",
+        "When polling for new events, store the 'after' cursor from the last response as your checkpoint."
+      ]
+    },
+    "sortOrder": {
+      "description": "Controls sort direction of results.",
+      "values": [
+        "ASCENDING",
+        "DESCENDING"
+      ],
+      "default": "ASCENDING (oldest first)",
+      "parameter": "sortOrder=DESCENDING",
+      "notes": "DESCENDING sorts newest first. Useful for manual investigation but inefficient for polling pipelines."
+    },
+    "constraints_and_limitations": {
+      "filter_complexity": {
+        "max_filter_expressions": "No hard-documented limit, but deeply nested compound expressions (>10 clauses) may cause 400 Bad Request or degraded performance.",
+        "supported_filter_fields": "Only specific fields support the 'filter' parameter. See filterable_fields reference. Querying unsupported fields returns a 400 error.",
+        "or_performance": "or operator causes full-scan behavior on some fields \u2014 limit or clauses to 2\u20133 maximum per query."
+      },
+      "mutual_exclusivity": [
+        "'q' and 'filter' cannot be used together in the same API request.",
+        "'since'/'until' and 'after' cannot be combined.",
+        "Only one 'after' cursor per request."
+      ],
+      "rate_limits": {
+        "description": "Okta enforces rate limits per API endpoint per minute. Exceeding limits returns HTTP 429 with a Retry-After header.",
+        "system_log_limits": {
+          "default": "60 requests/minute (varies by Okta plan and burst allowance)",
+          "notes": "High-volume polling with small page sizes will exhaust rate limits quickly. Use limit=1000 per request."
+        },
+        "rate_limit_headers": [
+          "X-Rate-Limit-Limit: total allowed requests",
+          "X-Rate-Limit-Remaining: remaining requests in window",
+          "X-Rate-Limit-Reset: Unix timestamp when window resets"
+        ],
+        "handling_429": "Implement exponential backoff. Read Retry-After header for precise wait time."
+      },
+      "filterable_fields_restriction": {
+        "description": "Not all System Log event fields support the 'filter' parameter. Only the fields listed in the filterable_fields section are officially supported.",
+        "consequence": "Filtering on unsupported fields returns HTTP 400. Field availability must be validated before building production queries."
+      },
+      "event_ordering": {
+        "description": "Events are returned in the order they were indexed, which approximates published timestamp order but is not strictly guaranteed under high load.",
+        "implication": "For detection rules that correlate events over time, add a time window buffer of 30\u201360 seconds to account for indexing lag."
+      },
+      "no_aggregation": {
+        "description": "The System Log API has no native COUNT, GROUP BY, SUM, or aggregation support.",
+        "workaround": "Aggregation-based detections (e.g., >10 failed logins in 5 minutes) must be implemented in the consuming SIEM or via Okta ThreatInsight."
+      },
+      "no_join_queries": {
+        "description": "Cannot correlate across multiple event types in a single API query. Cross-event correlation must be performed in a SIEM or data pipeline.",
+        "example": "Detecting 'MFA disabled then login from new country' requires joining two separate event streams downstream."
+      },
+      "regex_support": {
+        "supported": false,
+        "description": "The System Log filter API does not support regex operators. Use sw (starts with) or co (contains) for partial string matching.",
+        "workaround": "Apply regex post-retrieval in the consuming pipeline (SIEM rules, Python, etc.)."
+      },
+      "boolean_filter_support": {
+        "description": "Boolean fields (e.g., securityContext.isProxy) support eq true/false filtering.",
+        "example": "securityContext.isProxy eq true"
+      },
+      "historical_polling_limits": {
+        "description": "The since parameter can reference up to the retention window (default 90 days). Requests for events older than retention return an empty result set, not an error.",
+        "backfill_guidance": "For initial SIEM onboarding, begin polling from 90 days ago. Do not expect events older than your tenant's retention window."
+      }
+    },
+    "filterable_fields": {
+      "description": "Fields officially supported by the Okta System Log 'filter' parameter.",
+      "fields": [
+        {
+          "field": "eventType",
+          "type": "string",
+          "operators": [
+            "eq",
+            "sw",
+            "co"
+          ],
+          "example": "eventType eq \"user.session.start\""
+        },
+        {
+          "field": "displayMessage",
+          "type": "string",
+          "operators": [
+            "co",
+            "sw"
+          ],
+          "example": "displayMessage co \"MFA\""
+        },
+        {
+          "field": "severity",
+          "type": "string",
+          "operators": [
+            "eq"
+          ],
+          "valid_values": [
+            "DEBUG",
+            "INFO",
+            "WARN",
+            "ERROR"
+          ],
+          "example": "severity eq \"WARN\""
+        },
+        {
+          "field": "actor.id",
+          "type": "string",
+          "operators": [
+            "eq",
+            "pr"
+          ],
+          "example": "actor.id eq \"00u1abc2DEF3GHI4JK5L\""
+        },
+        {
+          "field": "actor.type",
+          "type": "string",
+          "operators": [
+            "eq"
+          ],
+          "valid_values": [
+            "User",
+            "SystemPrincipal",
+            "PublicClientApp",
+            "Browser",
+            "Unknown"
+          ],
+          "example": "actor.type eq \"User\""
+        },
+        {
+          "field": "actor.alternateId",
+          "type": "string",
+          "operators": [
+            "eq",
+            "sw"
+          ],
+          "example": "actor.alternateId eq \"jsmith@corp.com\""
+        },
+        {
+          "field": "actor.displayName",
+          "type": "string",
+          "operators": [
+            "eq",
+            "sw",
+            "co"
+          ],
+          "example": "actor.displayName co \"Smith\""
+        },
+        {
+          "field": "target.id",
+          "type": "string",
+          "operators": [
+            "eq",
+            "pr"
+          ],
+          "example": "target.id eq \"00u1abc2DEF3GHI4JK5L\""
+        },
+        {
+          "field": "target.type",
+          "type": "string",
+          "operators": [
+            "eq"
+          ],
+          "example": "target.type eq \"AppUser\""
+        },
+        {
+          "field": "target.alternateId",
+          "type": "string",
+          "operators": [
+            "eq",
+            "sw"
+          ],
+          "example": "target.alternateId eq \"jsmith@corp.com\""
+        },
+        {
+          "field": "target.displayName",
+          "type": "string",
+          "operators": [
+            "eq",
+            "co"
+          ],
+          "example": "target.displayName co \"Salesforce\""
+        },
+        {
+          "field": "outcome.result",
+          "type": "string",
+          "operators": [
+            "eq",
+            "ne"
+          ],
+          "valid_values": [
+            "SUCCESS",
+            "FAILURE",
+            "SKIPPED",
+            "ALLOW",
+            "DENY",
+            "CHALLENGE",
+            "UNKNOWN"
+          ],
+          "example": "outcome.result eq \"FAILURE\""
+        },
+        {
+          "field": "outcome.reason",
+          "type": "string",
+          "operators": [
+            "eq",
+            "co"
+          ],
+          "example": "outcome.reason co \"MFA\""
+        },
+        {
+          "field": "client.userAgent.rawUserAgent",
+          "type": "string",
+          "operators": [
+            "co",
+            "sw"
+          ],
+          "example": "client.userAgent.rawUserAgent co \"python-requests\""
+        },
+        {
+          "field": "client.ipAddress",
+          "type": "string",
+          "operators": [
+            "eq"
+          ],
+          "example": "client.ipAddress eq \"203.0.113.45\""
+        },
+        {
+          "field": "client.geographicalContext.country",
+          "type": "string",
+          "operators": [
+            "eq",
+            "ne"
+          ],
+          "example": "client.geographicalContext.country eq \"Russia\""
+        },
+        {
+          "field": "client.geographicalContext.city",
+          "type": "string",
+          "operators": [
+            "eq"
+          ],
+          "example": "client.geographicalContext.city eq \"Moscow\""
+        },
+        {
+          "field": "client.geographicalContext.state",
+          "type": "string",
+          "operators": [
+            "eq"
+          ],
+          "example": "client.geographicalContext.state eq \"California\""
+        },
+        {
+          "field": "client.device",
+          "type": "string",
+          "operators": [
+            "eq"
+          ],
+          "valid_values": [
+            "Computer",
+            "Mobile",
+            "Tablet",
+            "Unknown"
+          ],
+          "example": "client.device eq \"Mobile\""
+        },
+        {
+          "field": "client.zone",
+          "type": "string",
+          "operators": [
+            "eq"
+          ],
+          "example": "client.zone eq \"DefaultZone\""
+        },
+        {
+          "field": "securityContext.isProxy",
+          "type": "boolean",
+          "operators": [
+            "eq"
+          ],
+          "example": "securityContext.isProxy eq true"
+        },
+        {
+          "field": "securityContext.isp",
+          "type": "string",
+          "operators": [
+            "eq",
+            "co"
+          ],
+          "example": "securityContext.isp co \"DigitalOcean\""
+        },
+        {
+          "field": "securityContext.domain",
+          "type": "string",
+          "operators": [
+            "eq",
+            "co"
+          ],
+          "example": "securityContext.domain co \"tor2web.org\""
+        },
+        {
+          "field": "securityContext.asOrg",
+          "type": "string",
+          "operators": [
+            "eq",
+            "co"
+          ],
+          "example": "securityContext.asOrg co \"Tor Project\""
+        },
+        {
+          "field": "authenticationContext.authenticationProvider",
+          "type": "string",
+          "operators": [
+            "eq"
+          ],
+          "valid_values": [
+            "OKTA_AUTHENTICATION_PROVIDER",
+            "ACTIVE_DIRECTORY",
+            "LDAP",
+            "FEDERATION",
+            "SOCIAL",
+            "FACTOR_PROVIDER"
+          ],
+          "example": "authenticationContext.authenticationProvider eq \"FEDERATION\""
+        },
+        {
+          "field": "authenticationContext.credentialType",
+          "type": "string",
+          "operators": [
+            "eq"
+          ],
+          "valid_values": [
+            "OTP",
+            "SMS",
+            "PASSWORD",
+            "ASSERTION",
+            "IWA",
+            "EMAIL",
+            "OAUTH2",
+            "JWT",
+            "CERTIFICATE",
+            "DEVICE_UDID",
+            "TOKEN"
+          ],
+          "example": "authenticationContext.credentialType eq \"PASSWORD\""
+        },
+        {
+          "field": "published",
+          "type": "datetime",
+          "operators": [
+            "lt",
+            "gt",
+            "le",
+            "ge"
+          ],
+          "example": "published gt \"2024-01-01T00:00:00.000Z\""
+        },
+        {
+          "field": "uuid",
+          "type": "string",
+          "operators": [
+            "eq"
+          ],
+          "example": "uuid eq \"f3e5b2a1-...\""
+        }
+      ]
+    },
+    "expression_language": {
+      "description": "Okta Expression Language (EL) is used within Okta policy conditions, profile mappings, and Workflows \u2014 not in System Log API queries. It uses Apache Velocity-inspired syntax.",
+      "use_cases": [
+        "Profile attribute transformations (e.g., String.substringBefore(user.email, '@'))",
+        "Policy rule conditions (e.g., user.getGroups().contains('IT-Admins'))",
+        "Okta Workflow expressions",
+        "Token claim transformations"
+      ],
+      "common_functions": [
+        {
+          "function": "String.substringBefore(str, delimiter)",
+          "description": "Returns string before first occurrence of delimiter."
+        },
+        {
+          "function": "String.substringAfter(str, delimiter)",
+          "description": "Returns string after first occurrence of delimiter."
+        },
+        {
+          "function": "String.toUpperCase(str)",
+          "description": "Converts to uppercase."
+        },
+        {
+          "function": "String.toLowerCase(str)",
+          "description": "Converts to lowercase."
+        },
+        {
+          "function": "Arrays.contains(arr, value)",
+          "description": "True if array contains value."
+        },
+        {
+          "function": "user.getGroups().contains(groupId)",
+          "description": "True if user is a member of the specified group."
+        },
+        {
+          "function": "isMemberOfGroupName(\"GroupName\")",
+          "description": "True if user is a member of the named group."
+        },
+        {
+          "function": "isMemberOfAnyGroup(groupId1, groupId2)",
+          "description": "True if user is in any of the listed groups."
+        },
+        {
+          "function": "Time.now()",
+          "description": "Current UTC timestamp."
+        },
+        {
+          "function": "Convert.toBool(value)",
+          "description": "Converts to boolean."
+        },
+        {
+          "function": "Convert.toInt(value)",
+          "description": "Converts to integer."
+        }
+      ]
+    }
+  },
+  "data_models": {
+    "system_log_event": {
+      "description": "Schema for a single Okta System Log event object returned by the /api/v1/logs API.",
+      "root_fields": [
+        {
+          "field": "uuid",
+          "type": "string",
+          "description": "Globally unique event identifier (UUID v4).",
+          "filterable": true,
+          "example": "3aeede38-1cc4-11e9-ab14-d663bd873d93"
+        },
+        {
+          "field": "published",
+          "type": "datetime (ISO 8601 UTC)",
+          "description": "Timestamp when the event was published to the System Log.",
+          "filterable": true,
+          "example": "2024-06-15T14:32:01.000Z"
+        },
+        {
+          "field": "eventType",
+          "type": "string",
+          "description": "Dot-notation event type identifier. Primary field for detection rule targeting.",
+          "filterable": true,
+          "example": "user.authentication.sso"
+        },
+        {
+          "field": "version",
+          "type": "string",
+          "description": "System Log schema version.",
+          "filterable": false,
+          "example": "0"
+        },
+        {
+          "field": "severity",
+          "type": "enum",
+          "description": "Event severity level from Okta's perspective.",
+          "filterable": true,
+          "valid_values": [
+            "DEBUG",
+            "INFO",
+            "WARN",
+            "ERROR"
+          ]
+        },
+        {
+          "field": "legacyEventType",
+          "type": "string",
+          "description": "Legacy event type string (Classic Engine). Use eventType for modern detections.",
+          "filterable": false
+        },
+        {
+          "field": "displayMessage",
+          "type": "string",
+          "description": "Human-readable description of the event.",
+          "filterable": true,
+          "example": "User login to Okta"
+        },
+        {
+          "field": "changeDetails",
+          "type": "object",
+          "description": "Captures what changed in modification events (from/to values).",
+          "filterable": false
+        }
+      ],
+      "actor": {
+        "description": "The entity that initiated the action.",
+        "fields": [
+          {
+            "field": "actor.id",
+            "type": "string",
+            "description": "Unique Okta ID of the actor.",
+            "filterable": true,
+            "example": "00u1abc2DEF3GHI4JK5L"
+          },
+          {
+            "field": "actor.type",
+            "type": "string",
+            "description": "Actor entity type.",
+            "filterable": true,
+            "valid_values": [
+              "User",
+              "SystemPrincipal",
+              "PublicClientApp",
+              "Browser",
+              "Unknown"
+            ]
+          },
+          {
+            "field": "actor.alternateId",
+            "type": "string",
+            "description": "Email address or username of the actor.",
+            "filterable": true,
+            "example": "jsmith@corp.com"
+          },
+          {
+            "field": "actor.displayName",
+            "type": "string",
+            "description": "Human-readable actor name.",
+            "filterable": true,
+            "example": "John Smith"
+          },
+          {
+            "field": "actor.detailEntry",
+            "type": "object",
+            "description": "Additional actor-specific metadata (varies by event type).",
+            "filterable": false
+          }
+        ]
+      },
+      "client": {
+        "description": "Client context from which the event originated.",
+        "fields": [
+          {
+            "field": "client.userAgent.rawUserAgent",
+            "type": "string",
+            "description": "Full User-Agent string from the client request.",
+            "filterable": true,
+            "example": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+          },
+          {
+            "field": "client.userAgent.os",
+            "type": "string",
+            "description": "Parsed OS from User-Agent.",
+            "filterable": false,
+            "example": "Windows"
+          },
+          {
+            "field": "client.userAgent.browser",
+            "type": "string",
+            "description": "Parsed browser from User-Agent.",
+            "filterable": false,
+            "example": "CHROME"
+          },
+          {
+            "field": "client.zone",
+            "type": "string",
+            "description": "Okta network zone matched by client IP.",
+            "filterable": true,
+            "example": "CorpVPN_Zone"
+          },
+          {
+            "field": "client.device",
+            "type": "string",
+            "description": "Device type category.",
+            "filterable": true,
+            "valid_values": [
+              "Computer",
+              "Mobile",
+              "Tablet",
+              "Unknown"
+            ]
+          },
+          {
+            "field": "client.ipAddress",
+            "type": "string",
+            "description": "Source IP address of the client.",
+            "filterable": true,
+            "example": "203.0.113.45"
+          },
+          {
+            "field": "client.geographicalContext.city",
+            "type": "string",
+            "description": "GeoIP city.",
+            "filterable": true,
+            "example": "San Francisco"
+          },
+          {
+            "field": "client.geographicalContext.state",
+            "type": "string",
+            "description": "GeoIP state/region.",
+            "filterable": true,
+            "example": "California"
+          },
+          {
+            "field": "client.geographicalContext.country",
+            "type": "string",
+            "description": "GeoIP country (full name).",
+            "filterable": true,
+            "example": "United States"
+          },
+          {
+            "field": "client.geographicalContext.postalCode",
+            "type": "string",
+            "description": "GeoIP postal code.",
+            "filterable": false
+          },
+          {
+            "field": "client.geographicalContext.geolocation.lat",
+            "type": "float",
+            "description": "Latitude.",
+            "filterable": false
+          },
+          {
+            "field": "client.geographicalContext.geolocation.lon",
+            "type": "float",
+            "description": "Longitude.",
+            "filterable": false
+          }
+        ]
+      },
+      "outcome": {
+        "description": "Result of the action described by the event.",
+        "fields": [
+          {
+            "field": "outcome.result",
+            "type": "enum",
+            "description": "Outcome classification.",
+            "filterable": true,
+            "valid_values": [
+              "SUCCESS",
+              "FAILURE",
+              "SKIPPED",
+              "ALLOW",
+              "DENY",
+              "CHALLENGE",
+              "UNKNOWN"
+            ]
+          },
+          {
+            "field": "outcome.reason",
+            "type": "string",
+            "description": "Human-readable reason for the outcome (especially useful for FAILURE and DENY).",
+            "filterable": true,
+            "example": "INVALID_CREDENTIALS"
+          },
+          {
+            "field": "outcome.detail",
+            "type": "object",
+            "description": "Additional structured outcome details (varies by event type).",
+            "filterable": false
+          }
+        ]
+      },
+      "target": {
+        "description": "Array of one or more entities that the action was performed on. Most events have 1\u20133 targets.",
+        "fields": [
+          {
+            "field": "target[].id",
+            "type": "string",
+            "description": "Okta ID of the target entity.",
+            "filterable": true,
+            "example": "00u1abc2DEF3GHI4JK5L"
+          },
+          {
+            "field": "target[].type",
+            "type": "string",
+            "description": "Type of the target entity.",
+            "filterable": true,
+            "valid_values": [
+              "User",
+              "UserGroup",
+              "AppInstance",
+              "AppUser",
+              "Application",
+              "AuthenticatorEnrollment",
+              "Policy",
+              "PolicyRule",
+              "Role",
+              "OktaOrg",
+              "AccessPolicy",
+              "NetworkZone",
+              "ApiToken",
+              "Factor"
+            ]
+          },
+          {
+            "field": "target[].alternateId",
+            "type": "string",
+            "description": "Email or identifier of the target.",
+            "filterable": true,
+            "example": "jdoe@corp.com"
+          },
+          {
+            "field": "target[].displayName",
+            "type": "string",
+            "description": "Human-readable name of the target.",
+            "filterable": true,
+            "example": "Salesforce"
+          },
+          {
+            "field": "target[].detailEntry",
+            "type": "object",
+            "description": "Type-specific metadata about the target.",
+            "filterable": false
+          }
+        ]
+      },
+      "transaction": {
+        "description": "HTTP transaction context for the event.",
+        "fields": [
+          {
+            "field": "transaction.id",
+            "type": "string",
+            "description": "Unique transaction/request ID. Useful for correlating multiple events from the same request.",
+            "filterable": false
+          },
+          {
+            "field": "transaction.type",
+            "type": "string",
+            "description": "Transaction type (WEB or JOB).",
+            "filterable": false,
+            "valid_values": [
+              "WEB",
+              "JOB"
+            ]
+          },
+          {
+            "field": "transaction.detail",
+            "type": "object",
+            "description": "Additional transaction metadata.",
+            "filterable": false
+          }
+        ]
+      },
+      "authenticationContext": {
+        "description": "Authentication mechanism details.",
+        "fields": [
+          {
+            "field": "authenticationContext.authenticationProvider",
+            "type": "string",
+            "description": "Identity provider used for authentication.",
+            "filterable": true,
+            "valid_values": [
+              "OKTA_AUTHENTICATION_PROVIDER",
+              "ACTIVE_DIRECTORY",
+              "LDAP",
+              "FEDERATION",
+              "SOCIAL",
+              "FACTOR_PROVIDER"
+            ]
+          },
+          {
+            "field": "authenticationContext.credentialProvider",
+            "type": "string",
+            "description": "Credential provider (e.g., DUO_SECURITY, GOOGLE, RSA).",
+            "filterable": false
+          },
+          {
+            "field": "authenticationContext.credentialType",
+            "type": "string",
+            "description": "Type of credential used.",
+            "filterable": true,
+            "valid_values": [
+              "OTP",
+              "SMS",
+              "PASSWORD",
+              "ASSERTION",
+              "IWA",
+              "EMAIL",
+              "OAUTH2",
+              "JWT",
+              "CERTIFICATE",
+              "DEVICE_UDID",
+              "TOKEN"
+            ]
+          },
+          {
+            "field": "authenticationContext.issuer.id",
+            "type": "string",
+            "description": "Issuer ID for federated assertions.",
+            "filterable": false
+          },
+          {
+            "field": "authenticationContext.issuer.type",
+            "type": "string",
+            "description": "Issuer type (ORG or THIRD_PARTY).",
+            "filterable": false
+          },
+          {
+            "field": "authenticationContext.externalSessionId",
+            "type": "string",
+            "description": "Session ID from the external IdP (for federated flows).",
+            "filterable": false
+          },
+          {
+            "field": "authenticationContext.authenticationStep",
+            "type": "integer",
+            "description": "Step number in a multi-step authentication flow.",
+            "filterable": false
+          },
+          {
+            "field": "authenticationContext.interface",
+            "type": "string",
+            "description": "Authentication interface used (Okta Dashboard, SAML, etc.).",
+            "filterable": false
+          }
+        ]
+      },
+      "securityContext": {
+        "description": "IP reputation and network security metadata. Sourced from Okta ThreatInsight and third-party IP intelligence.",
+        "fields": [
+          {
+            "field": "securityContext.asNumber",
+            "type": "integer",
+            "description": "BGP Autonomous System number of the client IP.",
+            "filterable": false
+          },
+          {
+            "field": "securityContext.asOrg",
+            "type": "string",
+            "description": "Organization owning the ASN.",
+            "filterable": true,
+            "example": "DigitalOcean, LLC"
+          },
+          {
+            "field": "securityContext.isp",
+            "type": "string",
+            "description": "Internet Service Provider name.",
+            "filterable": true,
+            "example": "Amazon Technologies Inc."
+          },
+          {
+            "field": "securityContext.domain",
+            "type": "string",
+            "description": "Reverse DNS domain of the client IP.",
+            "filterable": true,
+            "example": "compute.amazonaws.com"
+          },
+          {
+            "field": "securityContext.isProxy",
+            "type": "boolean",
+            "description": "True if IP is identified as a proxy, VPN, or anonymizer by ThreatInsight.",
+            "filterable": true
+          }
+        ]
+      },
+      "debugContext": {
+        "description": "Additional debug-level data. Content varies significantly by event type. Rich source for advanced detections.",
+        "fields": [
+          {
+            "field": "debugContext.debugData.requestId",
+            "type": "string",
+            "description": "Internal Okta request ID."
+          },
+          {
+            "field": "debugContext.debugData.requestUri",
+            "type": "string",
+            "description": "Internal API path that generated the event."
+          },
+          {
+            "field": "debugContext.debugData.url",
+            "type": "string",
+            "description": "Full URL including query string."
+          },
+          {
+            "field": "debugContext.debugData.dtHash",
+            "type": "string",
+            "description": "Device token hash for device fingerprinting."
+          },
+          {
+            "field": "debugContext.debugData.clientAddress",
+            "type": "string",
+            "description": "Client IP address as seen by Okta."
+          },
+          {
+            "field": "debugContext.debugData.behaviors",
+            "type": "object",
+            "description": "Behavioral risk signals: New City, New Country, New Device, New IP, Velocity (OIE only)."
+          },
+          {
+            "field": "debugContext.debugData.risk",
+            "type": "object",
+            "description": "Risk level and reasons from Okta AI (OIE only). Contains: level (LOW/MEDIUM/HIGH), reasons[]."
+          },
+          {
+            "field": "debugContext.debugData.threatSuspected",
+            "type": "boolean",
+            "description": "True if ThreatInsight flagged this request."
+          },
+          {
+            "field": "debugContext.debugData.loginResult",
+            "type": "string",
+            "description": "Specific login result detail (e.g., LOCKED_OUT, PASSWORD_EXPIRED)."
+          },
+          {
+            "field": "debugContext.debugData.factor",
+            "type": "string",
+            "description": "MFA factor type used in the event."
+          },
+          {
+            "field": "debugContext.debugData.authnRequestId",
+            "type": "string",
+            "description": "Authentication request correlation ID."
+          },
+          {
+            "field": "debugContext.debugData.suspiciousActivity",
+            "type": "object",
+            "description": "Details when user reports suspicious activity via email notification."
+          },
+          {
+            "field": "debugContext.debugData.redirectUri",
+            "type": "string",
+            "description": "OAuth2 redirect URI used in authorization."
+          },
+          {
+            "field": "debugContext.debugData.grantType",
+            "type": "string",
+            "description": "OAuth2 grant type (authorization_code, client_credentials, etc.)."
+          },
+          {
+            "field": "debugContext.debugData.scopes",
+            "type": "string",
+            "description": "Space-separated OAuth2 scopes requested."
+          }
+        ]
+      },
+      "request": {
+        "description": "HTTP request context including IP chain for proxy/load balancer traversal.",
+        "fields": [
+          {
+            "field": "request.ipChain[].ip",
+            "type": "string",
+            "description": "IP address in the X-Forwarded-For chain."
+          },
+          {
+            "field": "request.ipChain[].geographicalContext",
+            "type": "object",
+            "description": "Geo context per IP in chain."
+          },
+          {
+            "field": "request.ipChain[].source",
+            "type": "string",
+            "description": "Source of the IP (e.g., X-Forwarded-For)."
+          },
+          {
+            "field": "request.ipChain[].version",
+            "type": "string",
+            "description": "IP version (V4 or V6)."
+          }
+        ]
+      }
+    },
+    "key_event_types": {
+      "description": "Authoritative reference of high-value Okta event types for detection engineering, organized by category.",
+      "authentication": [
+        {
+          "eventType": "user.session.start",
+          "description": "User successfully logged into Okta.",
+          "severity_typical": "INFO",
+          "detection_value": "High \u2014 baseline for all authentication analytics."
+        },
+        {
+          "eventType": "user.session.end",
+          "description": "User session expired or was terminated.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "user.authentication.sso",
+          "description": "User authenticated to an application via SSO.",
+          "severity_typical": "INFO",
+          "detection_value": "High \u2014 tracks app-level access."
+        },
+        {
+          "eventType": "user.authentication.auth_via_mfa",
+          "description": "User completed MFA authentication.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "user.authentication.auth_via_mfa_factor",
+          "description": "Specific MFA factor was evaluated.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "user.authentication.sso_idp",
+          "description": "User authenticated via an upstream IdP (SAML federation).",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "policy.evaluate_sign_on",
+          "description": "Sign-on policy was evaluated for a user. Outcome can be ALLOW, DENY, or CHALLENGE.",
+          "severity_typical": "INFO",
+          "detection_value": "High \u2014 DENY outcomes indicate blocked access attempts."
+        },
+        {
+          "eventType": "user.session.impersonation.initiate",
+          "description": "Admin initiated user impersonation session.",
+          "severity_typical": "WARN",
+          "detection_value": "Critical \u2014 must be monitored."
+        },
+        {
+          "eventType": "user.session.impersonation.end",
+          "description": "Impersonation session ended.",
+          "severity_typical": "WARN"
+        }
+      ],
+      "authentication_failures": [
+        {
+          "eventType": "user.account.lock",
+          "description": "User account was locked after exceeding failed login threshold.",
+          "severity_typical": "WARN",
+          "detection_value": "High \u2014 brute force / credential stuffing indicator."
+        },
+        {
+          "eventType": "user.account.lock.limit",
+          "description": "User reached account lock threshold.",
+          "severity_typical": "WARN"
+        },
+        {
+          "eventType": "user.authentication.sso (FAILURE)",
+          "description": "SSO authentication failed. Check outcome.reason.",
+          "detection_value": "High \u2014 failed auth telemetry."
+        },
+        {
+          "eventType": "user.authentication.auth_via_mfa (FAILURE)",
+          "description": "MFA challenge failed.",
+          "detection_value": "High \u2014 MFA fatigue attack indicator when repeated."
+        },
+        {
+          "eventType": "security.threat.detected",
+          "description": "ThreatInsight detected and blocked a suspicious IP.",
+          "severity_typical": "ERROR",
+          "detection_value": "Critical."
+        },
+        {
+          "eventType": "security.password.compromised",
+          "description": "Okta detected the user's password in a breach database.",
+          "severity_typical": "ERROR",
+          "detection_value": "Critical."
+        },
+        {
+          "eventType": "security.suspect_device_identified",
+          "description": "Device was flagged as suspicious by ThreatInsight.",
+          "severity_typical": "WARN"
+        }
+      ],
+      "mfa_and_authenticator": [
+        {
+          "eventType": "user.mfa.factor.activate",
+          "description": "MFA factor enrolled/activated for user.",
+          "severity_typical": "INFO",
+          "detection_value": "High \u2014 new MFA registration can indicate account takeover."
+        },
+        {
+          "eventType": "user.mfa.factor.deactivate",
+          "description": "MFA factor removed from user.",
+          "severity_typical": "WARN",
+          "detection_value": "High \u2014 MFA removal is a persistence mechanism."
+        },
+        {
+          "eventType": "user.mfa.factor.reset_all",
+          "description": "All MFA factors reset for user (admin action).",
+          "severity_typical": "WARN",
+          "detection_value": "Critical."
+        },
+        {
+          "eventType": "user.mfa.factor.update",
+          "description": "MFA factor configuration updated.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "user.mfa.attempt_bypass",
+          "description": "Attempt to bypass MFA requirement detected.",
+          "severity_typical": "WARN"
+        },
+        {
+          "eventType": "system.mfa.factor.deactivate",
+          "description": "Org-level MFA factor type deactivated by admin.",
+          "severity_typical": "WARN"
+        },
+        {
+          "eventType": "user.account.reset_password",
+          "description": "Password was reset.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "user.account.update_password",
+          "description": "User changed their own password.",
+          "severity_typical": "INFO"
+        }
+      ],
+      "lifecycle_management": [
+        {
+          "eventType": "user.lifecycle.create",
+          "description": "User account created.",
+          "severity_typical": "INFO",
+          "detection_value": "Medium \u2014 unusual creation times or admin actors."
+        },
+        {
+          "eventType": "user.lifecycle.activate",
+          "description": "User account activated.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "user.lifecycle.deactivate",
+          "description": "User account deactivated.",
+          "severity_typical": "INFO",
+          "detection_value": "High \u2014 detect reactivation of deactivated accounts."
+        },
+        {
+          "eventType": "user.lifecycle.reactivate",
+          "description": "Deactivated account reactivated.",
+          "severity_typical": "INFO",
+          "detection_value": "High \u2014 unauthorized reactivation = persistence."
+        },
+        {
+          "eventType": "user.lifecycle.suspend",
+          "description": "User account suspended.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "user.lifecycle.unsuspend",
+          "description": "User account unsuspended.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "user.lifecycle.delete.initiated",
+          "description": "User deletion initiated.",
+          "severity_typical": "WARN",
+          "detection_value": "High."
+        },
+        {
+          "eventType": "user.lifecycle.delete.completed",
+          "description": "User account permanently deleted.",
+          "severity_typical": "WARN"
+        },
+        {
+          "eventType": "user.import.add",
+          "description": "User imported from directory (AD/LDAP).",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "user.account.privilege.grant",
+          "description": "Admin privileges granted to a user.",
+          "severity_typical": "WARN",
+          "detection_value": "Critical \u2014 privilege escalation detection."
+        },
+        {
+          "eventType": "user.account.privilege.revoke",
+          "description": "Admin privileges revoked.",
+          "severity_typical": "INFO"
+        }
+      ],
+      "group_management": [
+        {
+          "eventType": "group.user_membership.add",
+          "description": "User added to a group.",
+          "severity_typical": "INFO",
+          "detection_value": "High \u2014 adding to privileged groups."
+        },
+        {
+          "eventType": "group.user_membership.remove",
+          "description": "User removed from a group.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "group.lifecycle.create",
+          "description": "New group created.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "group.lifecycle.delete",
+          "description": "Group deleted.",
+          "severity_typical": "WARN"
+        },
+        {
+          "eventType": "group.privilege.grant",
+          "description": "Admin role granted to a group.",
+          "severity_typical": "WARN",
+          "detection_value": "Critical."
+        }
+      ],
+      "application_management": [
+        {
+          "eventType": "application.lifecycle.create",
+          "description": "New application integration created in Okta.",
+          "severity_typical": "INFO",
+          "detection_value": "High \u2014 unauthorized app creation."
+        },
+        {
+          "eventType": "application.lifecycle.activate",
+          "description": "Application activated.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "application.lifecycle.deactivate",
+          "description": "Application deactivated.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "application.lifecycle.delete",
+          "description": "Application deleted.",
+          "severity_typical": "WARN"
+        },
+        {
+          "eventType": "application.user_membership.add",
+          "description": "User assigned to application.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "application.user_membership.remove",
+          "description": "User unassigned from application.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "app.oauth2.token.grant",
+          "description": "OAuth2 access token issued.",
+          "severity_typical": "INFO",
+          "detection_value": "High \u2014 token grants to unexpected apps."
+        },
+        {
+          "eventType": "app.oauth2.token.revoke",
+          "description": "OAuth2 token revoked.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "app.oauth2.authorize.code.grant",
+          "description": "OAuth2 authorization code granted.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "app.oauth2.as.authorize.success",
+          "description": "OAuth2 AS authorization successful.",
+          "severity_typical": "INFO"
+        }
+      ],
+      "admin_and_policy": [
+        {
+          "eventType": "system.api_token.create",
+          "description": "New API token created.",
+          "severity_typical": "INFO",
+          "detection_value": "Critical \u2014 API token creation for persistence."
+        },
+        {
+          "eventType": "system.api_token.revoke",
+          "description": "API token revoked.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "policy.lifecycle.create",
+          "description": "New policy created.",
+          "severity_typical": "INFO",
+          "detection_value": "High \u2014 unauthorized policy changes."
+        },
+        {
+          "eventType": "policy.lifecycle.update",
+          "description": "Policy updated.",
+          "severity_typical": "INFO",
+          "detection_value": "High \u2014 weakening of security policies."
+        },
+        {
+          "eventType": "policy.lifecycle.delete",
+          "description": "Policy deleted.",
+          "severity_typical": "WARN",
+          "detection_value": "Critical."
+        },
+        {
+          "eventType": "policy.rule.create",
+          "description": "Policy rule created.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "policy.rule.update",
+          "description": "Policy rule updated.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "policy.rule.delete",
+          "description": "Policy rule deleted.",
+          "severity_typical": "WARN"
+        },
+        {
+          "eventType": "zone.create",
+          "description": "New network zone created.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "zone.update",
+          "description": "Network zone updated.",
+          "severity_typical": "INFO",
+          "detection_value": "High \u2014 expanding allowed zones is a bypass technique."
+        },
+        {
+          "eventType": "zone.delete",
+          "description": "Network zone deleted.",
+          "severity_typical": "WARN"
+        },
+        {
+          "eventType": "user.account.report_suspicious_activity",
+          "description": "User reported activity as suspicious via email notification.",
+          "severity_typical": "WARN",
+          "detection_value": "Critical \u2014 direct user MFA phishing indicator."
+        },
+        {
+          "eventType": "okta.iam.role.grant.user",
+          "description": "Okta admin role granted to a specific user.",
+          "severity_typical": "WARN",
+          "detection_value": "Critical \u2014 privilege escalation."
+        },
+        {
+          "eventType": "okta.iam.role.revoke.user",
+          "description": "Okta admin role revoked from a user.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "system.agent.new_version",
+          "description": "Okta AD/LDAP Agent updated.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "system.agent.inactive",
+          "description": "Okta AD/LDAP Agent became inactive.",
+          "severity_typical": "WARN"
+        }
+      ],
+      "device_and_trust": [
+        {
+          "eventType": "device.lifecycle.create",
+          "description": "Device registered in Okta.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "device.lifecycle.delete",
+          "description": "Device deleted from Okta.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "device.lifecycle.activate",
+          "description": "Device activated (trusted).",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "device.lifecycle.deactivate",
+          "description": "Device deactivated.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "device.lifecycle.suspend",
+          "description": "Device suspended.",
+          "severity_typical": "INFO"
+        },
+        {
+          "eventType": "device.lifecycle.unsuspend",
+          "description": "Device unsuspended.",
+          "severity_typical": "INFO"
+        }
+      ]
+    }
+  },
+  "detection_engineering": {
+    "detection_patterns": {
+      "credential_stuffing": {
+        "description": "High volume of failed authentication attempts against multiple accounts from the same IP.",
+        "primary_event": "user.authentication.sso",
+        "filter": "eventType eq \"user.authentication.sso\" and outcome.result eq \"FAILURE\"",
+        "correlation_logic": "Aggregate by client.ipAddress over 5-minute window. Alert if distinct actor.alternateId count >5 and failure count >20.",
+        "supplementary_signals": [
+          "user.account.lock (multiple accounts)",
+          "security.threat.detected for same IP"
+        ],
+        "notes": "ThreatInsight may auto-block at the platform level; monitor security.threat.detected for coverage."
+      },
+      "brute_force_single_account": {
+        "description": "Repeated failed logins against a single account.",
+        "primary_event": "user.authentication.sso",
+        "filter": "eventType eq \"user.authentication.sso\" and outcome.result eq \"FAILURE\"",
+        "correlation_logic": "Aggregate by actor.alternateId over 10-minute window. Alert if failure count >=5.",
+        "terminal_event": "user.account.lock",
+        "notes": "Okta natively generates user.account.lock when threshold exceeded, but thresholds vary by policy configuration."
+      },
+      "mfa_fatigue": {
+        "description": "Attacker who knows valid credentials repeatedly triggers MFA push notifications to exhaust user.",
+        "primary_event": "user.authentication.auth_via_mfa",
+        "filter": "eventType eq \"user.authentication.auth_via_mfa\" and outcome.result eq \"FAILURE\"",
+        "correlation_logic": "Group by actor.alternateId. Alert if MFA FAILURE count >3 in 15-minute window.",
+        "high_confidence_signal": "user.account.report_suspicious_activity",
+        "notes": "Combine with: new country or IP not previously seen for actor. Okta Verify number challenge (OIE) mitigates this attack."
+      },
+      "mfa_bypass_new_factor_enrollment": {
+        "description": "Account takeover: attacker with valid credentials registers a new MFA factor to control the account.",
+        "primary_events": [
+          "user.mfa.factor.activate"
+        ],
+        "filter": "eventType eq \"user.mfa.factor.activate\"",
+        "correlation_logic": "Alert if user.mfa.factor.activate occurs within 60 minutes of user.session.start from a new country or IP not seen in last 30 days.",
+        "high_risk_signals": [
+          "New country in client.geographicalContext.country",
+          "securityContext.isProxy eq true",
+          "debugContext.debugData.behaviors contains 'New IP' or 'New Country'"
+        ]
+      },
+      "mfa_factor_removal": {
+        "description": "Attacker removes MFA factors to weaken account security or prevent account recovery.",
+        "primary_event": "user.mfa.factor.deactivate",
+        "filter": "eventType eq \"user.mfa.factor.deactivate\"",
+        "alert_condition": "Any occurrence \u2014 always high-value signal.",
+        "elevated_risk": "Alert as Critical if actor is the target (self-removal) and preceded by authentication from new country."
+      },
+      "impossible_travel": {
+        "description": "User authenticates from two geographically distant locations within an impossibly short timeframe.",
+        "primary_event": "user.session.start",
+        "filter": "eventType eq \"user.session.start\" and outcome.result eq \"SUCCESS\"",
+        "correlation_logic": "For each actor, compare client.geographicalContext.geolocation between consecutive successful sessions. Alert if distance > 500km and time delta < 2 hours.",
+        "okta_native_signal": "debugContext.debugData.behaviors may contain 'New Country' or 'Velocity' (OIE with Okta AI behavior detection).",
+        "notes": "VPN use can cause false positives. Cross-reference securityContext.isProxy to identify VPN exits."
+      },
+      "suspicious_admin_creation": {
+        "description": "New Okta admin role granted outside business hours or to a non-admin actor.",
+        "primary_events": [
+          "okta.iam.role.grant.user",
+          "user.account.privilege.grant"
+        ],
+        "filter": "eventType eq \"okta.iam.role.grant.user\"",
+        "alert_condition": "Always alert. Validate actor is an authorized super-admin. Check published timestamp for off-hours activity.",
+        "lateral_movement_indicator": "If actor and target are different users, and actor only recently received admin \u2014 privilege escalation chain."
+      },
+      "api_token_creation": {
+        "description": "API tokens provide persistent, long-lived access. Creation by non-admin or service accounts is a persistence indicator.",
+        "primary_event": "system.api_token.create",
+        "filter": "eventType eq \"system.api_token.create\"",
+        "alert_condition": "Always alert. Validate actor is an authorized service account or admin.",
+        "notes": "API tokens do not expire by default. Correlate with subsequent API usage anomalies."
+      },
+      "suspicious_oauth_token_grant": {
+        "description": "OAuth tokens granted to unfamiliar or high-scope applications.",
+        "primary_event": "app.oauth2.token.grant",
+        "filter": "eventType eq \"app.oauth2.token.grant\"",
+        "high_risk_signals": [
+          "debugContext.debugData.scopes contains 'offline_access'",
+          "debugContext.debugData.grantType eq \"client_credentials\"",
+          "target application not in approved app inventory"
+        ]
+      },
+      "policy_modification": {
+        "description": "Authentication or MFA policies modified \u2014 potential security control weakening.",
+        "primary_events": [
+          "policy.lifecycle.update",
+          "policy.rule.update",
+          "policy.rule.delete"
+        ],
+        "filter": "eventType sw \"policy.\"",
+        "alert_condition": "Alert on all policy deletions and modifications. Alert as Critical if MFA policy or Global Session Policy is modified.",
+        "correlation": "Compare actor to list of authorized IAM admins."
+      },
+      "network_zone_modification": {
+        "description": "Network zone changes can bypass IP-based access restrictions.",
+        "primary_events": [
+          "zone.create",
+          "zone.update",
+          "zone.delete"
+        ],
+        "filter": "eventType sw \"zone.\"",
+        "alert_condition": "Alert on any zone modification. Critical if blocklist zone modified or deleted."
+      },
+      "user_reported_suspicious_activity": {
+        "description": "User clicked 'This wasn't me' in an Okta email notification \u2014 direct indicator of phishing or account compromise.",
+        "primary_event": "user.account.report_suspicious_activity",
+        "filter": "eventType eq \"user.account.report_suspicious_activity\"",
+        "alert_condition": "Always Critical. Immediate investigation required.",
+        "response_actions": [
+          "Force password reset",
+          "Reset all MFA factors",
+          "Terminate all active sessions",
+          "Open P1 incident"
+        ]
+      },
+      "admin_impersonation": {
+        "description": "Admin impersonation of user accounts can be used for reconnaissance or to establish persistence.",
+        "primary_event": "user.session.impersonation.initiate",
+        "filter": "eventType eq \"user.session.impersonation.initiate\"",
+        "alert_condition": "Always alert. Validate against approved impersonation requests (ticket number, change window)."
+      },
+      "deactivated_account_reactivation": {
+        "description": "Reactivating a deactivated user account outside of authorized HR workflows is a persistence technique.",
+        "primary_event": "user.lifecycle.reactivate",
+        "filter": "eventType eq \"user.lifecycle.reactivate\"",
+        "alert_condition": "Alert if actor is not HR provisioning service account or authorized IAM admin.",
+        "correlation": "Check if target was deactivated due to termination (cross-reference user.lifecycle.deactivate reason)."
+      },
+      "proxy_vpn_authentication": {
+        "description": "Successful authentication from known proxy, VPN, or Tor exit node.",
+        "primary_event": "user.session.start",
+        "filter": "eventType eq \"user.session.start\" and outcome.result eq \"SUCCESS\" and securityContext.isProxy eq true",
+        "alert_condition": "Alert if user is not in approved VPN-user group or if authentication bypasses MFA.",
+        "false_positive_note": "Corporate VPN users may trigger this. Exclude corporate VPN IP ranges via network zone membership."
+      },
+      "unusual_user_agent": {
+        "description": "Authentication from scripting frameworks or unusual user agents may indicate automated credential stuffing or API abuse.",
+        "primary_event": "user.session.start",
+        "filter": "eventType eq \"user.session.start\" and client.userAgent.rawUserAgent co \"python-requests\"",
+        "other_suspicious_agents": [
+          "curl",
+          "Go-http-client",
+          "okhttp",
+          "axios",
+          "urllib",
+          "libwww-perl"
+        ],
+        "notes": "Legitimate automation (Okta Workflows, SCIM) also generates non-browser agents. Maintain approved user agent allowlist."
+      },
+      "sensitive_group_membership_change": {
+        "description": "User added to a highly privileged group (Okta Admins, IT Ops, Finance, etc.).",
+        "primary_event": "group.user_membership.add",
+        "filter": "eventType eq \"group.user_membership.add\"",
+        "alert_condition": "Alert if target group name matches sensitive group list (e.g., co \"Admin\" or co \"Privileged\" or co \"Executive\").",
+        "notes": "Maintain a reference list of sensitive group IDs and filter by target.id."
+      }
+    },
+    "tuning_guidelines": {
+      "false_positive_reduction": [
+        "Exclude known service account actor.alternateId values from authentication failure rules.",
+        "Use client.zone filters to exclude corporate network zones from geolocation anomaly rules.",
+        "Implement time-of-day baseline suppression: suppress low-count authentication failures during business hours.",
+        "Build allowlists of approved VPN ASNs for proxy/anonymizer detection rules.",
+        "Correlate MFA enrollment events with active HR onboarding records before alerting.",
+        "For API token creation, maintain an approved service account list and only alert on non-approved actors."
+      ],
+      "false_negative_reduction": [
+        "Monitor both Classic event types (legacyEventType) and modern eventType fields if tenant is mid-migration to OIE.",
+        "Ensure polling interval is \u226460 seconds to detect real-time threats.",
+        "Do not rely solely on outcome.result=FAILURE for account takeover \u2014 some ATO flows succeed (pass MFA) before triggering new factor enrollment.",
+        "Enable debugContext.debugData.behaviors parsing in OIE \u2014 contains 'New Device', 'New IP', 'New Country', 'Velocity' signals not available in root fields.",
+        "Include both user.authentication.auth_via_mfa and policy.evaluate_sign_on in MFA coverage \u2014 policy-level denials appear in policy events.",
+        "Subscribe to security.threat.detected events \u2014 these surface ThreatInsight blocks not captured in other auth events."
+      ],
+      "performance_optimization": [
+        "Always specify eventType eq or sw as the first filter clause to leverage event-type indexing.",
+        "Avoid co operator on high-cardinality fields (actor.alternateId, client.ipAddress) \u2014 use eq.",
+        "Use 'since' and 'until' to constrain time windows in historical searches.",
+        "Set limit=1000 per polling cycle to minimize API call frequency.",
+        "For SIEM integration, prefer Log Streaming (EventBridge/Splunk HEC) over polling for latency-sensitive detections.",
+        "Scope or-clauses to \u22643 eventType values per filter; use separate polling threads for broad event category coverage."
+      ]
+    },
+    "testing_and_validation": {
+      "pre_deployment_checklist": [
+        "Run filter query against real System Log data via /api/v1/logs and validate result count and content.",
+        "Verify all filter fields are on the supported filterable_fields list \u2014 test with a 400 error check.",
+        "Confirm outcome.result values match expected Okta enum (case-sensitive: SUCCESS not success).",
+        "Test boundary conditions: valid actor with no events, invalid filter syntax (expect 400).",
+        "Validate time window logic: ensure 'since' lookback covers expected activity duration.",
+        "Run inverse query (opposite outcome.result) to confirm excluded events are correct.",
+        "Check event volume per day to estimate SIEM ingestion load and storage.",
+        "Validate that correlation fields (actor.alternateId, transaction.id) are populated on target event types.",
+        "Test pagination: confirm 'after' cursor logic retrieves all events when result count >1000.",
+        "Verify MITRE technique mapping and document in rule metadata.",
+        "Confirm alert severity alignment with your organization's IR escalation SLAs."
+      ],
+      "api_test_template": {
+        "endpoint": "GET https://<tenant>.okta.com/api/v1/logs",
+        "headers": {
+          "Authorization": "SSWS <api_token>",
+          "Accept": "application/json"
+        },
+        "query_parameters": {
+          "filter": "<url-encoded filter expression>",
+          "since": "2024-01-01T00:00:00.000Z",
+          "until": "2024-01-02T00:00:00.000Z",
+          "limit": 1000,
+          "sortOrder": "ASCENDING"
+        },
+        "validation_steps": [
+          "HTTP 200 = valid query syntax and results.",
+          "HTTP 400 = invalid filter field or operator \u2014 check field name and operator compatibility.",
+          "HTTP 429 = rate limit exceeded \u2014 implement backoff.",
+          "HTTP 401 = invalid or expired API token.",
+          "Check X-Rate-Limit-Remaining header to monitor quota consumption.",
+          "Validate 'Link' header presence for pagination \u2014 absence means single page of results."
+        ]
+      },
+      "test_event_generation": {
+        "description": "Methods to generate known events for rule validation in non-production environments.",
+        "methods": [
+          {
+            "method": "Failed Login Simulation",
+            "steps": "Use Preview (staging) tenant. Attempt login with wrong password for test user. Verify user.authentication.sso FAILURE appears in log."
+          },
+          {
+            "method": "MFA Enrollment",
+            "steps": "Enroll a test MFA factor for a test user. Verify user.mfa.factor.activate appears."
+          },
+          {
+            "method": "API Token Creation",
+            "steps": "Create and immediately revoke an API token via Admin Console. Verify system.api_token.create event."
+          },
+          {
+            "method": "Policy Modification",
+            "steps": "Make a minor policy change and revert immediately. Verify policy.lifecycle.update event."
+          },
+          {
+            "method": "Admin Role Assignment",
+            "steps": "Grant Read-Only Admin role to test account. Verify okta.iam.role.grant.user event. Immediately revoke."
+          },
+          {
+            "method": "Network Zone Update",
+            "steps": "Add a test IP to a zone and remove. Verify zone.update events."
+          },
+          {
+            "method": "ThreatInsight Testing",
+            "steps": "Enable ThreatInsight in Audit mode. Use a known proxy IP to authenticate. Verify debugContext.debugData.threatSuspected = true."
+          }
+        ]
+      },
+      "log_validation_queries": {
+        "recent_failures": "GET /api/v1/logs?filter=outcome.result eq \"FAILURE\"&since=<1hr ago>&limit=1000",
+        "specific_actor": "GET /api/v1/logs?filter=actor.alternateId eq \"testuser@corp.com\"&since=<24hr ago>&limit=1000",
+        "threat_events": "GET /api/v1/logs?filter=eventType eq \"security.threat.detected\"&since=<7d ago>&limit=1000",
+        "admin_actions": "GET /api/v1/logs?filter=actor.type eq \"User\" and eventType sw \"system.\"&since=<24hr ago>&limit=1000",
+        "proxy_auth": "GET /api/v1/logs?filter=securityContext.isProxy eq true and outcome.result eq \"SUCCESS\"&since=<24hr ago>&limit=1000"
+      }
+    }
+  },
+  "output_formatting_standards": {
+    "normalized_event_schema": {
+      "description": "Canonical normalized schema for Okta System Log events ingested into a SIEM or data pipeline. Flattens nested objects into underscore-delimited field names for index compatibility.",
+      "schema_version": "1.0",
+      "field_mapping": {
+        "event_id": "uuid",
+        "event_time": "published",
+        "event_type": "eventType",
+        "event_severity": "severity",
+        "event_message": "displayMessage",
+        "actor_id": "actor.id",
+        "actor_type": "actor.type",
+        "actor_email": "actor.alternateId",
+        "actor_name": "actor.displayName",
+        "src_ip": "client.ipAddress",
+        "src_city": "client.geographicalContext.city",
+        "src_state": "client.geographicalContext.state",
+        "src_country": "client.geographicalContext.country",
+        "src_lat": "client.geographicalContext.geolocation.lat",
+        "src_lon": "client.geographicalContext.geolocation.lon",
+        "src_zone": "client.zone",
+        "src_device_type": "client.device",
+        "user_agent": "client.userAgent.rawUserAgent",
+        "user_agent_os": "client.userAgent.os",
+        "user_agent_browser": "client.userAgent.browser",
+        "outcome_result": "outcome.result",
+        "outcome_reason": "outcome.reason",
+        "target_id": "target[0].id",
+        "target_type": "target[0].type",
+        "target_email": "target[0].alternateId",
+        "target_name": "target[0].displayName",
+        "auth_provider": "authenticationContext.authenticationProvider",
+        "credential_type": "authenticationContext.credentialType",
+        "is_proxy": "securityContext.isProxy",
+        "isp": "securityContext.isp",
+        "asn_org": "securityContext.asOrg",
+        "reverse_domain": "securityContext.domain",
+        "transaction_id": "transaction.id",
+        "risk_level": "debugContext.debugData.risk.level",
+        "threat_suspected": "debugContext.debugData.threatSuspected",
+        "behaviors": "debugContext.debugData.behaviors",
+        "request_uri": "debugContext.debugData.requestUri"
+      },
+      "example_normalized_event": {
+        "event_id": "3aeede38-1cc4-11e9-ab14-d663bd873d93",
+        "event_time": "2024-06-15T14:32:01.000Z",
+        "event_type": "user.session.start",
+        "event_severity": "INFO",
+        "event_message": "User login to Okta",
+        "actor_id": "00u1abc2DEF3GHI4JK5L",
+        "actor_type": "User",
+        "actor_email": "jsmith@corp.com",
+        "actor_name": "John Smith",
+        "src_ip": "203.0.113.45",
+        "src_city": "Moscow",
+        "src_state": "Moscow",
+        "src_country": "Russia",
+        "src_device_type": "Computer",
+        "user_agent": "python-requests/2.28.0",
+        "outcome_result": "SUCCESS",
+        "outcome_reason": null,
+        "target_id": "00u1abc2DEF3GHI4JK5L",
+        "target_type": "User",
+        "is_proxy": true,
+        "isp": "DigitalOcean, LLC",
+        "asn_org": "DIGITALOCEAN-ASN",
+        "threat_suspected": true,
+        "risk_level": "HIGH"
+      }
+    },
+    "siem_integration_formats": {
+      "splunk_cim_mapping": {
+        "description": "Okta field-to-Splunk CIM (Common Information Model) Authentication datamodel mapping.",
+        "mappings": {
+          "app": "target[0].displayName",
+          "action": "outcome.result (map: SUCCESS\u2192success, FAILURE\u2192failure, DENY\u2192blocked)",
+          "reason": "outcome.reason",
+          "src": "client.ipAddress",
+          "src_ip": "client.ipAddress",
+          "user": "actor.alternateId",
+          "user_name": "actor.displayName",
+          "user_type": "actor.type",
+          "dest": "tenant domain",
+          "authentication_method": "authenticationContext.credentialType",
+          "_time": "published",
+          "signature": "eventType",
+          "signature_id": "legacyEventType",
+          "vendor_product": "Okta"
+        }
+      },
+      "sentinel_schema": {
+        "description": "Microsoft Sentinel recommended table and field mapping for Okta events via the Okta data connector.",
+        "table": "Okta_CL",
+        "key_fields": {
+          "TimeGenerated": "published",
+          "EventType_s": "eventType",
+          "SrcIpAddr_s": "client.ipAddress",
+          "ActorAlternateId_s": "actor.alternateId",
+          "OutcomeResult_s": "outcome.result",
+          "Severity_s": "severity",
+          "UUID_g": "uuid"
+        }
+      },
+      "qradar_mapping": {
+        "description": "IBM QRadar DSM field mapping for Okta via the Okta DSM.",
+        "log_source_type": "Okta Identity Cloud",
+        "key_mappings": {
+          "EventId": "uuid",
+          "StartTime": "published",
+          "EventName": "eventType",
+          "SourceIP": "client.ipAddress",
+          "Username": "actor.alternateId",
+          "Outcome": "outcome.result",
+          "ApplicationName": "target[0].displayName"
+        }
+      },
+      "cef_format": {
+        "description": "Common Event Format mapping for syslog-based SIEM delivery.",
+        "header": "CEF:0|Okta|Okta Identity Cloud|1.0|<eventType>|<displayMessage>|<severity_int>|",
+        "extensions": {
+          "deviceVendor": "Okta",
+          "deviceProduct": "Okta Identity Cloud",
+          "deviceVersion": "1.0",
+          "deviceEventClassId": "eventType",
+          "name": "displayMessage",
+          "severity": "severity (map: DEBUG=1, INFO=3, WARN=6, ERROR=9)",
+          "src": "client.ipAddress",
+          "suser": "actor.alternateId",
+          "duser": "target[0].alternateId",
+          "app": "target[0].displayName",
+          "outcome": "outcome.result",
+          "start": "published",
+          "requestClientApplication": "client.userAgent.rawUserAgent",
+          "cs1": "actor.id",
+          "cs1Label": "actorId",
+          "cs2": "securityContext.isProxy",
+          "cs2Label": "isProxy",
+          "cs3": "debugContext.debugData.risk.level",
+          "cs3Label": "riskLevel"
+        }
+      }
+    },
+    "severity_normalization": {
+      "description": "Map Okta's four-level severity to SIEM standard integer scales.",
+      "okta_to_numeric": {
+        "DEBUG": 1,
+        "INFO": 2,
+        "WARN": 3,
+        "ERROR": 4
+      },
+      "okta_to_detection_severity": {
+        "description": "For detection alert severity \u2014 based on event type, not Okta severity alone.",
+        "heuristic": "Okta severity is a poor proxy for detection severity. Use detection_patterns severity overrides. security.threat.detected is always Critical regardless of Okta severity field."
+      }
+    },
+    "alert_output_schema": {
+      "description": "Standard alert record format for detections built on Okta System Log data.",
+      "required_fields": [
+        "alert_id",
+        "alert_title",
+        "alert_severity",
+        "alert_status",
+        "detection_rule_id",
+        "detection_rule_name",
+        "event_type",
+        "event_time",
+        "actor_email",
+        "src_ip",
+        "src_country",
+        "outcome_result",
+        "is_proxy",
+        "risk_level"
+      ],
+      "example": {
+        "alert_id": "DET-20240615-00123",
+        "alert_title": "MFA Factor Enrolled from High-Risk Country",
+        "alert_severity": "Critical",
+        "alert_status": "Open",
+        "detection_rule_id": "OKTA-MFA-003",
+        "detection_rule_name": "New MFA Factor Enrollment - Suspicious Context",
+        "mitre_tactic": "Persistence",
+        "mitre_technique": "T1556.006",
+        "event_id": "3aeede38-1cc4-11e9-ab14-d663bd873d93",
+        "event_type": "user.mfa.factor.activate",
+        "event_time": "2024-06-15T14:32:01.000Z",
+        "actor_id": "00u1abc2DEF3GHI4JK5L",
+        "actor_email": "jsmith@corp.com",
+        "actor_name": "John Smith",
+        "src_ip": "203.0.113.45",
+        "src_country": "Russia",
+        "src_city": "Moscow",
+        "is_proxy": true,
+        "isp": "DigitalOcean, LLC",
+        "risk_level": "HIGH",
+        "threat_suspected": true,
+        "outcome_result": "SUCCESS",
+        "target_type": "AuthenticatorEnrollment",
+        "target_name": "Okta Verify",
+        "recommended_actions": [
+          "Verify with user if enrollment was intentional",
+          "If unauthorized: reset all MFA factors",
+          "Force password reset",
+          "Terminate all active sessions",
+          "Review other activity from same IP"
+        ]
+      }
+    },
+    "report_output_standards": {
+      "authentication_summary_report": {
+        "required_columns": [
+          "actor_email",
+          "src_country",
+          "outcome_result",
+          "event_count",
+          "first_seen",
+          "last_seen",
+          "unique_ips"
+        ],
+        "group_by": [
+          "actor_email",
+          "outcome_result"
+        ],
+        "sort_default": "event_count desc",
+        "filter": "eventType eq \"user.session.start\""
+      },
+      "failed_auth_report": {
+        "required_columns": [
+          "actor_email",
+          "src_ip",
+          "src_country",
+          "outcome_reason",
+          "failure_count",
+          "first_failure",
+          "last_failure"
+        ],
+        "group_by": [
+          "actor_email",
+          "src_ip"
+        ],
+        "sort_default": "failure_count desc",
+        "filter": "outcome.result eq \"FAILURE\""
+      },
+      "admin_activity_report": {
+        "required_columns": [
+          "actor_email",
+          "event_type",
+          "target_name",
+          "target_type",
+          "event_time",
+          "src_ip",
+          "src_country"
+        ],
+        "filter": "actor.type eq \"User\" and eventType sw \"system.\" or eventType sw \"okta.iam.\" or eventType sw \"policy.\" or eventType sw \"zone.\"",
+        "sort_default": "event_time desc"
+      },
+      "mfa_changes_report": {
+        "required_columns": [
+          "actor_email",
+          "event_type",
+          "target_name",
+          "event_time",
+          "src_ip",
+          "src_country",
+          "is_proxy"
+        ],
+        "filter": "eventType sw \"user.mfa.factor.\"",
+        "sort_default": "event_time desc"
+      }
+    }
+  },
+  "mitre_attack_mapping": {
+    "description": "MITRE ATT&CK technique mappings to Okta detection patterns for coverage tracking and threat modeling.",
+    "mappings": [
+      {
+        "technique_id": "T1078.004",
+        "technique": "Valid Accounts: Cloud Accounts",
+        "tactic": "Initial Access, Persistence, Defense Evasion, Privilege Escalation",
+        "okta_events": [
+          "user.session.start (SUCCESS from new country)",
+          "user.authentication.sso"
+        ],
+        "filter": "eventType eq \"user.session.start\" and outcome.result eq \"SUCCESS\"",
+        "detection_notes": "Correlate with behavioral signals in debugContext.debugData.behaviors for 'New Country' or 'New IP'."
+      },
+      {
+        "technique_id": "T1110.003",
+        "technique": "Credential Stuffing",
+        "tactic": "Credential Access",
+        "okta_events": [
+          "user.authentication.sso (FAILURE, multiple actors, same IP)",
+          "security.threat.detected"
+        ],
+        "filter": "outcome.result eq \"FAILURE\" and eventType eq \"user.authentication.sso\"",
+        "detection_notes": "Aggregate by client.ipAddress. Distinct actor count >5 from single IP is high-confidence signal."
+      },
+      {
+        "technique_id": "T1111",
+        "technique": "Multi-Factor Authentication Interception",
+        "tactic": "Credential Access",
+        "okta_events": [
+          "user.authentication.auth_via_mfa (FAILURE, repeated)",
+          "user.account.report_suspicious_activity"
+        ],
+        "filter": "eventType eq \"user.account.report_suspicious_activity\"",
+        "detection_notes": "report_suspicious_activity is the definitive MFA phishing signal. Treat as P1 immediately."
+      },
+      {
+        "technique_id": "T1556.006",
+        "technique": "Multi-Factor Authentication",
+        "tactic": "Credential Access, Defense Evasion, Persistence",
+        "okta_events": [
+          "user.mfa.factor.activate",
+          "user.mfa.factor.deactivate",
+          "user.mfa.factor.reset_all"
+        ],
+        "filter": "eventType eq \"user.mfa.factor.deactivate\" or eventType eq \"user.mfa.factor.reset_all\"",
+        "detection_notes": "MFA factor removal disables a security control. MFA enrollment from suspicious context indicates account takeover."
+      },
+      {
+        "technique_id": "T1098.001",
+        "technique": "Account Manipulation: Additional Cloud Credentials",
+        "tactic": "Persistence",
+        "okta_events": [
+          "system.api_token.create"
+        ],
+        "filter": "eventType eq \"system.api_token.create\"",
+        "detection_notes": "API token creation = persistent access mechanism. Validate against approved service account list."
+      },
+      {
+        "technique_id": "T1136.003",
+        "technique": "Create Account: Cloud Account",
+        "tactic": "Persistence",
+        "okta_events": [
+          "user.lifecycle.create",
+          "user.lifecycle.reactivate"
+        ],
+        "filter": "eventType eq \"user.lifecycle.reactivate\"",
+        "detection_notes": "Reactivating terminated accounts is a common persistence technique."
+      },
+      {
+        "technique_id": "T1078",
+        "technique": "Valid Accounts",
+        "tactic": "Initial Access",
+        "okta_events": [
+          "policy.evaluate_sign_on (DENY)",
+          "user.session.impersonation.initiate"
+        ],
+        "filter": "eventType eq \"user.session.impersonation.initiate\"",
+        "detection_notes": "Admin impersonation grants access to another user's context \u2014 treat as high-value audit event."
+      },
+      {
+        "technique_id": "T1484.001",
+        "technique": "Domain Policy Modification: Group Policy Modification",
+        "tactic": "Defense Evasion, Privilege Escalation",
+        "okta_events": [
+          "policy.lifecycle.update",
+          "policy.rule.delete",
+          "zone.update"
+        ],
+        "filter": "eventType eq \"policy.lifecycle.update\" or eventType eq \"policy.rule.delete\"",
+        "detection_notes": "Policy weakening (e.g., disabling MFA requirement) is a defense evasion technique."
+      },
+      {
+        "technique_id": "T1068",
+        "technique": "Exploitation for Privilege Escalation",
+        "tactic": "Privilege Escalation",
+        "okta_events": [
+          "okta.iam.role.grant.user",
+          "user.account.privilege.grant",
+          "group.user_membership.add (to admin group)"
+        ],
+        "filter": "eventType eq \"okta.iam.role.grant.user\"",
+        "detection_notes": "Monitor for privilege escalation chains: standard user \u2192 group membership \u2192 admin role."
+      },
+      {
+        "technique_id": "T1550.001",
+        "technique": "Use Alternate Authentication Material: Application Access Token",
+        "tactic": "Defense Evasion, Lateral Movement",
+        "okta_events": [
+          "app.oauth2.token.grant",
+          "app.oauth2.as.authorize.success"
+        ],
+        "filter": "eventType eq \"app.oauth2.token.grant\"",
+        "detection_notes": "OAuth tokens with offline_access scope provide persistent access independent of user sessions."
+      }
+    ]
+  },
+  "common_errors_and_troubleshooting": {
+    "api_errors": [
+      {
+        "http_status": 400,
+        "error_code": "E0000031",
+        "description": "Invalid filter expression.",
+        "common_causes": [
+          "Unsupported field in filter parameter",
+          "Invalid operator for field type",
+          "Malformed filter syntax",
+          "Missing quotes around string values"
+        ],
+        "resolution": "Validate field name against filterable_fields list. Ensure string values are double-quoted. Check operator compatibility."
+      },
+      {
+        "http_status": 400,
+        "error_code": "E0000047",
+        "description": "Combining 'q' and 'filter' parameters in same request.",
+        "resolution": "Use either 'q' or 'filter' \u2014 not both. For production rules, always use 'filter'."
+      },
+      {
+        "http_status": 401,
+        "description": "Unauthorized \u2014 invalid or expired API token.",
+        "resolution": "Verify API token is active in Okta Admin Console. Check token scope includes okta.logs.read."
+      },
+      {
+        "http_status": 403,
+        "description": "Forbidden \u2014 token lacks required scope.",
+        "resolution": "API token requires Read Only Admin role or custom role with Logs view permission."
+      },
+      {
+        "http_status": 429,
+        "description": "Rate limit exceeded.",
+        "resolution": "Read Retry-After header. Implement exponential backoff. Increase polling page size (limit=1000) to reduce request frequency."
+      }
+    ],
+    "detection_logic_errors": [
+      {
+        "error": "Filter returns no results despite expected events",
+        "causes": [
+          "Incorrect field path (e.g., actor.email instead of actor.alternateId)",
+          "Case mismatch in enum value (e.g., 'success' vs 'SUCCESS')",
+          "Events older than 90-day retention window",
+          "timeframe specified in 'since' is too narrow"
+        ],
+        "diagnostic": "Test with a broad single-clause filter (eventType eq \"user.session.start\") and progressively add clauses."
+      },
+      {
+        "error": "Rule fires on every event (no filtering)",
+        "causes": [
+          "Missing eventType clause",
+          "or clause too broad",
+          "Not operator misapplied"
+        ],
+        "diagnostic": "Review operator precedence. Ensure compound expressions are parenthesized correctly."
+      },
+      {
+        "error": "Missing events in streaming pipeline",
+        "causes": [
+          "Polling interval too wide (missing events between polls)",
+          "Cursor not persisted between polling cycles",
+          "Events published with indexing delay"
+        ],
+        "resolution": "Persist 'after' cursor to durable storage. Add 30\u201360 second buffer to 'since' on restart. Use Log Streaming for guaranteed delivery."
+      },
+      {
+        "error": "Duplicate events in pipeline",
+        "causes": [
+          "Polling overlap due to since/until overlap",
+          "Not using cursor-based pagination"
+        ],
+        "resolution": "Implement deduplication on event uuid field. Use cursor-based pagination (after) exclusively after initial backfill."
+      }
+    ]
+  },
+  "reference_quick_cards": {
+    "filter_cheatsheet": {
+      "exact_event_type": "eventType eq \"user.session.start\"",
+      "event_type_prefix": "eventType sw \"user.authentication\"",
+      "failed_auth": "outcome.result eq \"FAILURE\"",
+      "specific_user": "actor.alternateId eq \"jsmith@corp.com\"",
+      "specific_ip": "client.ipAddress eq \"203.0.113.45\"",
+      "country_filter": "client.geographicalContext.country eq \"Russia\"",
+      "proxy_detected": "securityContext.isProxy eq true",
+      "isp_filter": "securityContext.isp co \"DigitalOcean\"",
+      "warn_or_above": "severity eq \"WARN\"",
+      "scripting_agent": "client.userAgent.rawUserAgent co \"python-requests\"",
+      "admin_actor": "actor.type eq \"User\" and eventType sw \"system.\"",
+      "field_present": "securityContext.domain pr",
+      "compound_example": "(eventType eq \"user.mfa.factor.activate\" or eventType eq \"user.mfa.factor.deactivate\") and outcome.result eq \"SUCCESS\""
+    },
+    "outcome_result_reference": {
+      "SUCCESS": "Action completed successfully.",
+      "FAILURE": "Action failed (check outcome.reason for detail).",
+      "SKIPPED": "Action was not applicable and skipped.",
+      "ALLOW": "Access was permitted by policy.",
+      "DENY": "Access was denied by policy.",
+      "CHALLENGE": "User was challenged for additional authentication.",
+      "UNKNOWN": "Outcome could not be determined."
+    },
+    "severity_reference": {
+      "DEBUG": "Low-level diagnostic event. Rarely relevant for security detection.",
+      "INFO": "Normal operational event. Most authentication and lifecycle events.",
+      "WARN": "Potentially concerning event. MFA changes, admin actions, policy modifications.",
+      "ERROR": "Error condition or blocked threat. security.threat.detected, account lock."
+    },
+    "critical_event_types_by_priority": {
+      "P1_immediate": [
+        "user.account.report_suspicious_activity",
+        "security.threat.detected",
+        "security.password.compromised",
+        "user.session.impersonation.initiate",
+        "okta.iam.role.grant.user"
+      ],
+      "P2_high": [
+        "user.mfa.factor.deactivate",
+        "user.mfa.factor.reset_all",
+        "system.api_token.create",
+        "user.account.privilege.grant",
+        "policy.lifecycle.delete",
+        "policy.rule.delete",
+        "zone.delete",
+        "user.lifecycle.reactivate"
+      ],
+      "P3_medium": [
+        "user.mfa.factor.activate",
+        "policy.lifecycle.update",
+        "zone.update",
+        "group.user_membership.add",
+        "application.lifecycle.create",
+        "user.lifecycle.create",
+        "system.agent.inactive"
+      ]
+    },
+    "operator_field_compatibility": {
+      "eq": [
+        "string",
+        "boolean",
+        "enum",
+        "datetime"
+      ],
+      "ne": [
+        "string",
+        "enum"
+      ],
+      "sw": [
+        "string"
+      ],
+      "co": [
+        "string"
+      ],
+      "pr": [
+        "any"
+      ],
+      "lt, gt, le, ge": [
+        "datetime"
+      ],
+      "and, or, not": [
+        "compound expressions"
+      ]
+    }
+  }
+}

@@ -1,0 +1,16 @@
+# ─── Core Application ─────────────────────────────────────────────────────────
+streamlit==1.32.2              # Pinned: CSS selectors target internal DOM; upgrade only after visual regression test
+pyyaml>=6.0.1,<7               # Sigma rule parsing; upper bound prevents silent major-version breaks
+
+# ─── Environment & Configuration ──────────────────────────────────────────────
+python-dotenv>=1.0.0,<2.0      # .env file loading for dev/staging parity with production
+
+# ─── Observability & Audit Logging ────────────────────────────────────────────
+structlog>=24.1.0,<25.0        # Structured JSON audit logging; wired to X-Auth-Request-User/Email headers
+regex>=2024.11.6,<2026.0       # Regex engine with timeout support for ReDoS protection
+
+# ─── Removed in v6.2 ──────────────────────────────────────────────────────────
+# httpx         — Listed but unused; API calls use stdlib urllib.request. Re-add if SDK is adopted.
+# authlib       — Listed but unused; Okta SSO is handled by oauth2-proxy sidecar, not app code.
+# pydantic      — Listed but unused; no Pydantic v2 models exist in codebase. Re-add if KB schemas are typed.
+# pydantic-settings — Removed with pydantic.

@@ -1,0 +1,27 @@
+# ─── Testing ──────────────────────────────────────────────────────────────────
+pytest>=8.0,<9.0
+pytest-cov>=4.0,<5.0
+pytest-mock>=3.12,<4.0
+pytest-asyncio>=0.23,<1.0
+pytest-timeout>=2.3,<3.0      # Required: pytest.ini sets --timeout=30
+
+# ─── Linting & Formatting ─────────────────────────────────────────────────────
+ruff>=0.4.0,<1.0
+black>=24.0,<25.0
+isort>=5.13,<6.0
+mypy>=1.9,<2.0
+
+# ─── Security Scanning ────────────────────────────────────────────────────────
+bandit>=1.7.8,<2.0
+pip-audit>=2.7,<3.0
+
+# ─── Secrets Detection (also install as git hook via pre-commit) ───────────────
+detect-secrets>=1.4,<2.0
+
+# ─── Type Stubs ───────────────────────────────────────────────────────────────
+types-PyYAML>=6.0
+
+# ─── Visual Regression (Playwright) ───────────────────────────────────────────
+# Listed for future implementation. Not yet wired to any test file.
+# To enable: uncomment, run `playwright install chromium`, add tests/test_visual.py
+# playwright>=1.43,<2.0

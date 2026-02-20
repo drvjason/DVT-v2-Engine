@@ -1,0 +1,2387 @@
+{
+  "metadata": {
+    "title": "Obsidian Security SaaS Detection Engineering Knowledge Base",
+    "version": "2.0",
+    "purpose": "Comprehensive reference for detection engineering, rule development, testing, and validation of OQL-based detection logic on the Obsidian Security platform. Covers SaaS activity monitoring, behavioral analytics, threat detection, and SaaS Security Posture Management (SSPM).",
+    "last_updated": "2025-02",
+    "maintainer": "Detection Engineering Team",
+    "platform_focus": "SaaS Security \u2014 Activity Monitoring, Threat Detection, SSPM, Identity Risk",
+    "tags": [
+      "obsidian-security",
+      "saas-security",
+      "sspm",
+      "oql",
+      "detection-engineering",
+      "saas-threat-detection",
+      "identity-security",
+      "knowledge-base"
+    ],
+    "schema_version": "1.0",
+    "kb_updated_at": "2025-01-01"
+  },
+  "platform_architecture": {
+    "overview": {
+      "description": "Obsidian Security is an agentless, cloud-native SaaS Security platform that provides unified visibility, threat detection, investigation, and response across enterprise SaaS applications. It connects to SaaS applications via OAuth 2.0 and vendor APIs to ingest activity logs, user identity data, configuration posture, and permission structures. All ingested data is normalized into a unified activity schema and analyzed by Obsidian's behavioral analytics engine to surface threats, misconfigurations, and identity risks.",
+      "core_capabilities": [
+        "SaaS Activity Monitoring and Threat Detection",
+        "SaaS Security Posture Management (SSPM)",
+        "Identity and Access Risk Assessment",
+        "OAuth Application Risk Monitoring",
+        "Insider Threat Detection",
+        "Account Takeover (ATO) Detection",
+        "SaaS Data Access and Exfiltration Detection",
+        "Unified SaaS Investigation and Response"
+      ],
+      "deployment_model": {
+        "type": "Fully cloud-hosted SaaS (no on-premises components)",
+        "agent_required": false,
+        "integration_method": "API-based (OAuth 2.0, vendor REST APIs, webhook ingest)",
+        "tenant_isolation": "Dedicated per-customer tenant with isolated data storage and processing"
+      }
+    },
+    "core_components": {
+      "integration_layer": {
+        "description": "Connects to enterprise SaaS applications via vendor-native APIs and OAuth 2.0. Continuously ingests activity events, user identity data, resource metadata, and configuration states.",
+        "supported_applications": {
+          "collaboration": [
+            "Microsoft 365 (Exchange, Teams, SharePoint, OneDrive)",
+            "Google Workspace (Gmail, Drive, Meet, Admin)",
+            "Slack",
+            "Zoom",
+            "Box",
+            "Dropbox"
+          ],
+          "crm_and_business": [
+            "Salesforce",
+            "HubSpot",
+            "ServiceNow",
+            "Zendesk"
+          ],
+          "development_and_devops": [
+            "GitHub",
+            "GitLab",
+            "Jira",
+            "Confluence",
+            "PagerDuty"
+          ],
+          "identity_and_hr": [
+            "Okta",
+            "Azure Active Directory / Entra ID",
+            "Workday",
+            "BambooHR"
+          ],
+          "security_and_it": [
+            "CrowdStrike",
+            "1Password",
+            "LastPass",
+            "AWS (CloudTrail)"
+          ],
+          "finance": [
+            "NetSuite",
+            "Expensify",
+            "DocuSign"
+          ]
+        },
+        "integration_auth_methods": [
+          "OAuth 2.0 (read-only scopes)",
+          "Service Account API Keys",
+          "Webhook-based push ingest",
+          "SCIM for identity sync"
+        ]
+      },
+      "normalization_engine": {
+        "description": "Transforms raw, vendor-specific activity logs from each SaaS application into Obsidian's unified activity schema. All events \u2014 regardless of source application \u2014 share a common set of fields enabling cross-application correlation and unified querying via OQL.",
+        "normalization_dimensions": [
+          "Actor identity resolution (matching users across apps via email/IdP)",
+          "Action classification into standardized verb taxonomy",
+          "Resource type normalization",
+          "IP geolocation and threat enrichment",
+          "Device context enrichment",
+          "Session correlation",
+          "User risk score assignment"
+        ]
+      },
+      "behavioral_analytics_engine": {
+        "description": "Machine learning and rules-based engine that profiles user and application behavior, establishes baselines, and detects deviations indicative of threats. Continuously scores each event against learned user behavior models.",
+        "analytical_capabilities": [
+          "User behavior baseline modeling (per user, per app, per action type)",
+          "Peer group comparison (role-based, department-based)",
+          "Temporal anomaly detection (time-of-day, day-of-week)",
+          "Geographic anomaly detection (impossible travel, new country)",
+          "Volume anomaly detection (bulk download, mass delete)",
+          "OAuth application risk scoring",
+          "Dormant account detection",
+          "Privilege escalation detection",
+          "Cross-app lateral movement detection"
+        ]
+      },
+      "detection_rule_engine": {
+        "description": "Evaluates OQL-based detection rules against normalized activity events in real-time and in scheduled batch mode. Matched rules generate Obsidian Alerts with severity, MITRE mapping, and investigation context.",
+        "rule_evaluation_modes": [
+          {
+            "mode": "Real-Time (Streaming)",
+            "description": "Rules evaluated as events are ingested. Latency: seconds to low minutes depending on source app API polling frequency.",
+            "use_cases": [
+              "Account takeover",
+              "Suspicious login",
+              "Privileged action abuse"
+            ]
+          },
+          {
+            "mode": "Scheduled (Batch)",
+            "description": "Rules evaluated on a defined schedule (hourly, daily). Used for aggregate and threshold-based detections.",
+            "use_cases": [
+              "Bulk data export over 24 hours",
+              "User accessing N apps in single session",
+              "Dormant account activity"
+            ]
+          }
+        ]
+      },
+      "sspm_engine": {
+        "description": "Continuously evaluates SaaS application configurations against security benchmarks (CIS, vendor best practices, custom policies). Surfaces misconfigurations as findings with remediation guidance.",
+        "configuration_checks": [
+          "MFA enforcement status per application",
+          "OAuth app permissions and scopes",
+          "Data sharing and external access settings",
+          "Admin privilege distribution",
+          "Password policy compliance",
+          "Audit log enablement",
+          "API token and service account inventory"
+        ]
+      },
+      "investigation_workspace": {
+        "description": "Interactive investigation console where analysts use OQL to search activity logs, explore user timelines, trace resource access, and pivot across SaaS applications.",
+        "features": [
+          "OQL query editor with field autocomplete",
+          "User activity timeline view",
+          "Resource access graph",
+          "Cross-app pivot (from one app event to correlated events in other apps for same actor)",
+          "Alert-to-evidence drill-down",
+          "Session replay (where supported by source app)"
+        ]
+      },
+      "identity_graph": {
+        "description": "Unified identity layer that resolves user identities across connected SaaS applications using email address, IdP user ID, and profile attributes. Enables cross-application user activity correlation.",
+        "resolution_fields": [
+          "Email address",
+          "IdP subject ID",
+          "Employee ID (from HR system)",
+          "Alias mapping"
+        ],
+        "risk_attributes": [
+          "User risk score (0\u2013100)",
+          "Account status (Active, Inactive, Suspended, Terminated)",
+          "Privileged account flag",
+          "Service account flag",
+          "External / contractor flag",
+          "Application access inventory",
+          "OAuth grants inventory"
+        ]
+      },
+      "alert_management": {
+        "description": "Central alert queue for all Obsidian detections. Supports triage, assignment, status management, and SOAR integration.",
+        "alert_lifecycle_statuses": [
+          "Open",
+          "In Progress",
+          "Resolved",
+          "Dismissed",
+          "False Positive"
+        ],
+        "severity_levels": [
+          "Critical",
+          "High",
+          "Medium",
+          "Low",
+          "Informational"
+        ],
+        "response_integrations": [
+          "Slack notification",
+          "PagerDuty",
+          "Jira ticket creation",
+          "ServiceNow incident",
+          "Webhook (generic SOAR)",
+          "Microsoft Teams notification",
+          "Email"
+        ]
+      }
+    },
+    "data_pipeline": {
+      "stages": [
+        {
+          "stage": 1,
+          "name": "Collection",
+          "description": "Obsidian polls SaaS vendor APIs on configurable intervals (typically 1\u201315 minutes). Some integrations use webhook push for near-real-time delivery.",
+          "latency_note": "Effective detection latency includes SaaS vendor API lag + Obsidian polling interval + normalization time. Total typical latency: 2\u201320 minutes."
+        },
+        {
+          "stage": 2,
+          "name": "Normalization",
+          "description": "Raw vendor events are transformed into the Obsidian Unified Activity Schema. Actor identity is resolved against the Identity Graph."
+        },
+        {
+          "stage": 3,
+          "name": "Enrichment",
+          "description": "Events are enriched with: GeoIP data, IP reputation signals, user risk score, device context, OAuth app risk score, and peer group behavioral context."
+        },
+        {
+          "stage": 4,
+          "name": "Analytics and Rule Evaluation",
+          "description": "Enriched events are evaluated against behavioral models and OQL detection rules. Matches generate alerts."
+        },
+        {
+          "stage": 5,
+          "name": "Alert Delivery",
+          "description": "Generated alerts are surfaced in the Obsidian alert queue and optionally forwarded to integrated SOAR/ITSM/notification systems."
+        }
+      ]
+    }
+  },
+  "oql_language": {
+    "overview": {
+      "description": "Obsidian Query Language (OQL) is Obsidian Security's proprietary query language for searching the normalized SaaS activity data store, building detection rules, constructing investigation queries, and defining SSPM policy conditions. OQL uses a structured filter syntax with field-operator-value expressions, logical combinators, time-scoping clauses, and aggregation primitives.",
+      "primary_use_cases": [
+        "Detection rule authoring",
+        "Threat hunting and investigation search",
+        "Alert query (scoping when an alert fires)",
+        "SSPM policy condition definition",
+        "Dashboard and report query construction"
+      ],
+      "syntax_model": "Structured predicate-based filtering with dot-notation field paths, typed operators, logical combinators, optional aggregation, and time-window scoping.",
+      "case_sensitivity": {
+        "field_names": "Case-insensitive",
+        "string_values": "Case-insensitive by default for most operators. Exact case matching available via the 'exact' modifier where supported.",
+        "operators": "Case-insensitive (AND, and, And are all valid)"
+      }
+    },
+    "query_structure": {
+      "basic_form": "<field_path> <operator> <value> [AND|OR|NOT <expression>]",
+      "scoped_form": "<filter_expression> | [time(<window>)] | [limit(<n>)] | [aggregate(<function>)]",
+      "full_example": "app = \"salesforce\" AND action = \"download\" AND user.risk_score > 70 | time(24h) | limit(1000)",
+      "clause_order": [
+        "1. Filter predicates (field conditions)",
+        "2. Pipe-chained modifiers: time(), limit(), sort(), aggregate()"
+      ]
+    },
+    "operators": {
+      "equality_and_comparison": [
+        {
+          "operator": "=",
+          "description": "Exact equality match (case-insensitive for strings).",
+          "example": "app = \"salesforce\"",
+          "supported_types": [
+            "string",
+            "boolean",
+            "enum",
+            "integer",
+            "float"
+          ]
+        },
+        {
+          "operator": "!=",
+          "description": "Not equal.",
+          "example": "outcome != \"success\"",
+          "supported_types": [
+            "string",
+            "boolean",
+            "enum",
+            "integer",
+            "float"
+          ]
+        },
+        {
+          "operator": ">",
+          "description": "Greater than.",
+          "example": "user.risk_score > 70",
+          "supported_types": [
+            "integer",
+            "float",
+            "datetime"
+          ]
+        },
+        {
+          "operator": "<",
+          "description": "Less than.",
+          "example": "file.size_bytes < 1048576",
+          "supported_types": [
+            "integer",
+            "float",
+            "datetime"
+          ]
+        },
+        {
+          "operator": ">=",
+          "description": "Greater than or equal to.",
+          "example": "event.count >= 10",
+          "supported_types": [
+            "integer",
+            "float",
+            "datetime"
+          ]
+        },
+        {
+          "operator": "<=",
+          "description": "Less than or equal to.",
+          "example": "user.risk_score <= 30",
+          "supported_types": [
+            "integer",
+            "float",
+            "datetime"
+          ]
+        }
+      ],
+      "string_matching": [
+        {
+          "operator": "contains",
+          "description": "Case-insensitive substring match.",
+          "example": "user.email contains \"contractor\"",
+          "supported_types": [
+            "string"
+          ],
+          "performance_note": "Slower than equality on high-cardinality fields. Avoid as first clause."
+        },
+        {
+          "operator": "not contains",
+          "description": "Negated substring match.",
+          "example": "resource.name not contains \"backup\"",
+          "supported_types": [
+            "string"
+          ]
+        },
+        {
+          "operator": "starts_with",
+          "description": "String prefix match.",
+          "example": "user.email starts_with \"svc-\"",
+          "supported_types": [
+            "string"
+          ]
+        },
+        {
+          "operator": "ends_with",
+          "description": "String suffix match.",
+          "example": "resource.name ends_with \".csv\"",
+          "supported_types": [
+            "string"
+          ]
+        },
+        {
+          "operator": "matches",
+          "description": "Regular expression match (PCRE-compatible).",
+          "example": "user.email matches \"^admin.*@corp\\.com$\"",
+          "supported_types": [
+            "string"
+          ],
+          "performance_note": "Computationally expensive. Avoid on high-volume event streams. Use starts_with or ends_with where possible."
+        },
+        {
+          "operator": "in",
+          "description": "Matches any value in a provided list.",
+          "example": "action in [\"download\", \"export\", \"share\"]",
+          "supported_types": [
+            "string",
+            "enum",
+            "integer"
+          ],
+          "syntax_note": "Values provided as a bracket-enclosed, comma-separated list."
+        },
+        {
+          "operator": "not in",
+          "description": "Does not match any value in the list.",
+          "example": "app not in [\"slack\", \"zoom\"]",
+          "supported_types": [
+            "string",
+            "enum",
+            "integer"
+          ]
+        }
+      ],
+      "null_and_existence": [
+        {
+          "operator": "is null",
+          "description": "Field is absent or explicitly null.",
+          "example": "device.id is null",
+          "supported_types": [
+            "any"
+          ]
+        },
+        {
+          "operator": "is not null",
+          "description": "Field is present and not null.",
+          "example": "geo.country is not null",
+          "supported_types": [
+            "any"
+          ]
+        },
+        {
+          "operator": "exists",
+          "description": "Alias for 'is not null'.",
+          "example": "oauth.app_name exists",
+          "supported_types": [
+            "any"
+          ]
+        }
+      ],
+      "boolean": [
+        {
+          "operator": "= true / = false",
+          "description": "Boolean equality.",
+          "example": "user.is_privileged = true",
+          "supported_types": [
+            "boolean"
+          ]
+        }
+      ],
+      "logical_combinators": [
+        {
+          "operator": "AND",
+          "description": "Both expressions must match.",
+          "example": "app = \"github\" AND action = \"delete\"",
+          "precedence": "Higher than OR. Use parentheses to override."
+        },
+        {
+          "operator": "OR",
+          "description": "Either expression must match.",
+          "example": "action = \"download\" OR action = \"export\"",
+          "precedence": "Lower than AND."
+        },
+        {
+          "operator": "NOT",
+          "description": "Negates the following expression.",
+          "example": "NOT user.is_service_account = true",
+          "syntax_note": "Can also be expressed as 'NOT (expression)' for compound negation."
+        }
+      ],
+      "grouping": {
+        "description": "Parentheses enforce evaluation order and are required when mixing AND with OR.",
+        "example": "(action = \"download\" OR action = \"export\") AND user.risk_score > 60",
+        "critical_note": "Without parentheses, AND binds tighter than OR \u2014 always parenthesize OR clauses when combining with AND."
+      }
+    },
+    "time_scoping": {
+      "description": "OQL time scoping restricts event search to a relative or absolute time window. Applied via the pipe modifier or as inline field conditions.",
+      "relative_window_syntax": {
+        "description": "Relative lookback from query execution time.",
+        "syntax": "| time(<value><unit>)",
+        "units": {
+          "m": "minutes",
+          "h": "hours",
+          "d": "days",
+          "w": "weeks"
+        },
+        "examples": [
+          "| time(15m) \u2014 last 15 minutes",
+          "| time(24h) \u2014 last 24 hours",
+          "| time(7d) \u2014 last 7 days",
+          "| time(4w) \u2014 last 4 weeks"
+        ]
+      },
+      "absolute_window_syntax": {
+        "description": "Explicit start and end timestamps.",
+        "syntax": "| time(\"<ISO8601_start>\", \"<ISO8601_end>\")",
+        "example": "| time(\"2024-06-01T00:00:00Z\", \"2024-06-30T23:59:59Z\")",
+        "format": "ISO 8601 UTC (YYYY-MM-DDTHH:MM:SSZ)"
+      },
+      "inline_time_filter": {
+        "description": "Using the event.timestamp field directly in filter conditions.",
+        "example": "event.timestamp > \"2024-06-01T00:00:00Z\" AND event.timestamp < \"2024-06-30T23:59:59Z\""
+      },
+      "default_behavior": {
+        "investigation_search": "Default lookback is 30 days if no time modifier is specified.",
+        "detection_rules": "Rules evaluate on a sliding window defined in the rule configuration (not in OQL itself).",
+        "note": "Always specify an explicit time window in investigation queries to avoid full-history scans."
+      }
+    },
+    "aggregation_and_thresholds": {
+      "description": "OQL supports threshold-based detection through aggregation pipe modifiers. Used for detecting bulk operations, repeated failures, and volumetric anomalies.",
+      "aggregate_syntax": "| aggregate(<function>(<field>) [by <group_field>]) [having <condition>]",
+      "aggregate_functions": [
+        {
+          "function": "count",
+          "description": "Count of matching events.",
+          "example": "action = \"download\" | aggregate(count() by user.email) having count > 50"
+        },
+        {
+          "function": "count_distinct",
+          "description": "Count of distinct values of a field.",
+          "example": "action = \"login\" | aggregate(count_distinct(geo.country) by user.email) having count_distinct > 3"
+        },
+        {
+          "function": "sum",
+          "description": "Sum of a numeric field.",
+          "example": "action = \"download\" | aggregate(sum(file.size_bytes) by user.email) having sum > 1073741824"
+        },
+        {
+          "function": "max",
+          "description": "Maximum value of a numeric or datetime field.",
+          "example": "action = \"login\" | aggregate(max(event.timestamp) by user.email)"
+        },
+        {
+          "function": "min",
+          "description": "Minimum value of a numeric or datetime field.",
+          "example": "action = \"login\" | aggregate(min(event.timestamp) by user.email)"
+        },
+        {
+          "function": "avg",
+          "description": "Average value of a numeric field.",
+          "example": "action = \"api_call\" | aggregate(avg(response_time_ms) by app)"
+        }
+      ],
+      "group_by": {
+        "description": "Groups aggregation results by one or more fields.",
+        "syntax": "| aggregate(<function> by <field1>, <field2>)",
+        "example": "action = \"share\" | aggregate(count() by user.email, app) having count > 20"
+      },
+      "having_clause": {
+        "description": "Post-aggregation filter. Only rows satisfying the having condition generate alert matches.",
+        "syntax": "having <aggregate_alias> <operator> <threshold>",
+        "example": "| aggregate(count() by user.email) having count > 10",
+        "note": "having is required for threshold-based detection rules. Without it, the aggregate is purely for display."
+      }
+    },
+    "sorting_and_limiting": {
+      "sort": {
+        "syntax": "| sort(<field> [asc|desc])",
+        "example": "| sort(event.timestamp desc)",
+        "default": "Descending (newest first)",
+        "notes": "Sort is applied after filtering and before limit."
+      },
+      "limit": {
+        "syntax": "| limit(<integer>)",
+        "example": "| limit(500)",
+        "default": 1000,
+        "max_value": 10000,
+        "notes": "For detection rules, limit is typically not set \u2014 all matching events trigger the rule. Limit is used in investigation search to bound result sets."
+      }
+    },
+    "constraints_and_limitations": {
+      "query_complexity": {
+        "max_conditions": "No hard-documented clause limit, but queries with >20 compound conditions may exhibit degraded performance.",
+        "nesting_depth": "Parenthetical nesting is supported. Deeply nested expressions (>6 levels) may cause parse errors.",
+        "or_clauses": "Large OR chains (>10 values) should be rewritten using the 'in' operator for performance.",
+        "recommendation": "Scope queries with specific 'app' and 'action' filters first \u2014 these are the most selective indexed fields."
+      },
+      "regex_limitations": [
+        "Regex (matches operator) is evaluated post-filter \u2014 always pair with an equality or prefix filter to narrow the candidate set first.",
+        "Complex patterns with many alternations or backtracking-prone constructs may time out on high-volume event sets.",
+        "Regex anchors (^ and $) are supported and recommended to prevent partial matches.",
+        "The matches operator cannot be used inside aggregate() group-by fields."
+      ],
+      "aggregation_constraints": [
+        "aggregate() must be the last pipe modifier before having (cannot pipe aggregate results further).",
+        "Aggregation window is tied to the time() modifier in the same query \u2014 aggregations span the full time window.",
+        "Maximum group cardinality for aggregate() by: 10,000 unique group values. Queries exceeding this may be truncated.",
+        "count_distinct() on high-cardinality fields (e.g., resource.id) is approximate above 1,000 distinct values (HyperLogLog implementation).",
+        "Aggregation results cannot be sorted by the aggregate function result in detection rule context \u2014 only in investigation search."
+      ],
+      "time_window_constraints": [
+        "Maximum lookback for investigation queries: 90 days (tenant default). Extended retention requires add-on.",
+        "Real-time detection rules support minimum time windows of 5 minutes.",
+        "Absolute time ranges spanning >30 days in a single query may be slow \u2014 prefer rolling relative windows.",
+        "time() and inline event.timestamp filters cannot be combined in the same query."
+      ],
+      "field_availability": [
+        "Not all fields are populated for all applications. App-specific fields (e.g., salesforce.object_type) are only present for events from that application.",
+        "Use 'is not null' or 'exists' checks before filtering on app-specific fields to avoid zero-match queries.",
+        "Fields from the 'device' namespace are only populated when the source app provides device context (e.g., Okta, Microsoft 365 with Intune).",
+        "The 'session' namespace fields require session correlation \u2014 may be absent for API-generated events."
+      ],
+      "cross_app_query_behavior": [
+        "Queries without an 'app' filter will search across ALL connected applications \u2014 ensure this is intentional.",
+        "Cross-app correlation requires matching on user.email or user.id (IdP-resolved identity) as the join key.",
+        "Some fields (e.g., resource.id, action) may have different semantic meanings across apps \u2014 validate per-app before cross-app comparisons."
+      ],
+      "null_handling": [
+        "Comparing a null field with = or != returns no match \u2014 use 'is null' / 'is not null' for null checks.",
+        "NOT (field = value) does NOT match records where the field is null \u2014 combine with OR field is null if null inclusion is desired.",
+        "aggregate() count() includes records with null values for the group-by field under a null bucket."
+      ],
+      "rate_limits_and_performance": [
+        "Investigation queries are subject to per-user concurrency limits (typically 3\u20135 concurrent queries).",
+        "Large historical queries (>30 days, no app filter) may be queued and deferred during peak platform load.",
+        "Detection rules are evaluated by the platform engine \u2014 individual rule complexity impacts alert latency.",
+        "API-based OQL queries (via Obsidian Search API) are subject to rate limiting: consult your tenant documentation."
+      ],
+      "string_value_handling": [
+        "String comparisons are case-insensitive by default. The platform lowercases both field value and query value before comparison.",
+        "Whitespace is significant in string values \u2014 'salesforce ' (trailing space) will not match 'salesforce'.",
+        "Multi-word string values must be enclosed in double quotes: action = \"share externally\".",
+        "Backslash escaping is required for double quotes within string values: resource.name = \"report\\\"final\\\"\"."
+      ]
+    },
+    "filterable_fields_index": {
+      "description": "Fields known to support indexed lookups for high-performance filtering. Non-indexed fields are evaluated post-scan.",
+      "indexed_fields": [
+        "app",
+        "action",
+        "outcome",
+        "user.email",
+        "user.id",
+        "user.risk_level",
+        "event.timestamp",
+        "geo.country",
+        "ip_address",
+        "resource.type",
+        "severity"
+      ],
+      "non_indexed_fields": [
+        "resource.name",
+        "user.department",
+        "device.os",
+        "session.id",
+        "raw.message"
+      ],
+      "recommendation": "Always begin OQL queries with at least one indexed field filter to avoid full table scans."
+    }
+  },
+  "data_models": {
+    "unified_activity_event": {
+      "description": "The core normalized event schema representing all SaaS activity observed by Obsidian. Every event from every integrated application is transformed into this schema.",
+      "namespaces": {
+        "event": {
+          "description": "Core event metadata.",
+          "fields": [
+            {
+              "field": "event.id",
+              "type": "string (UUID)",
+              "description": "Globally unique Obsidian event identifier.",
+              "filterable": true,
+              "example": "evt_8a3f2c1d-4b5e-..."
+            },
+            {
+              "field": "event.timestamp",
+              "type": "datetime (ISO 8601 UTC)",
+              "description": "Time the event was generated by the source SaaS application.",
+              "filterable": true,
+              "example": "2024-06-15T14:32:01.000Z"
+            },
+            {
+              "field": "event.ingested_at",
+              "type": "datetime (ISO 8601 UTC)",
+              "description": "Time Obsidian received and processed the event.",
+              "filterable": true
+            },
+            {
+              "field": "event.source_id",
+              "type": "string",
+              "description": "Original event ID from the source SaaS application.",
+              "filterable": true
+            },
+            {
+              "field": "event.raw",
+              "type": "string (JSON)",
+              "description": "Full raw event payload from the source application. Available for investigation but not efficient to filter on.",
+              "filterable": false
+            }
+          ]
+        },
+        "app": {
+          "description": "Source SaaS application context.",
+          "fields": [
+            {
+              "field": "app",
+              "type": "string",
+              "description": "Normalized application identifier.",
+              "filterable": true,
+              "indexed": true,
+              "valid_values": [
+                "salesforce",
+                "github",
+                "google_workspace",
+                "microsoft_365",
+                "slack",
+                "box",
+                "dropbox",
+                "okta",
+                "workday",
+                "zoom",
+                "servicenow",
+                "jira",
+                "confluence",
+                "github",
+                "gitlab",
+                "aws",
+                "1password"
+              ],
+              "example": "salesforce"
+            },
+            {
+              "field": "app_instance",
+              "type": "string",
+              "description": "Specific instance identifier when multiple instances of the same app are integrated.",
+              "filterable": true,
+              "example": "salesforce-prod"
+            },
+            {
+              "field": "app_type",
+              "type": "enum",
+              "description": "Application category.",
+              "filterable": true,
+              "valid_values": [
+                "collaboration",
+                "crm",
+                "devops",
+                "identity",
+                "storage",
+                "hr",
+                "finance",
+                "security",
+                "itsm"
+              ]
+            }
+          ]
+        },
+        "action": {
+          "description": "Standardized action verb taxonomy. All vendor-specific event types are mapped to Obsidian's action vocabulary.",
+          "fields": [
+            {
+              "field": "action",
+              "type": "string",
+              "description": "Normalized action performed. Primary detection field.",
+              "filterable": true,
+              "indexed": true,
+              "example": "download"
+            },
+            {
+              "field": "action_category",
+              "type": "enum",
+              "description": "High-level action grouping.",
+              "filterable": true,
+              "valid_values": [
+                "read",
+                "write",
+                "delete",
+                "share",
+                "admin",
+                "auth",
+                "config",
+                "export",
+                "api"
+              ]
+            },
+            {
+              "field": "action_raw",
+              "type": "string",
+              "description": "Original vendor-specific event type name before normalization.",
+              "filterable": true,
+              "example": "ContentDownloaded"
+            }
+          ],
+          "action_taxonomy": {
+            "authentication": [
+              "login",
+              "logout",
+              "login_failed",
+              "mfa_challenge",
+              "mfa_success",
+              "mfa_failure",
+              "password_reset",
+              "password_change",
+              "session_start",
+              "session_end",
+              "token_issued",
+              "token_revoked"
+            ],
+            "data_access": [
+              "read",
+              "view",
+              "download",
+              "preview",
+              "search"
+            ],
+            "data_modification": [
+              "create",
+              "update",
+              "delete",
+              "move",
+              "rename",
+              "restore",
+              "upload",
+              "overwrite"
+            ],
+            "sharing_and_collaboration": [
+              "share",
+              "share_externally",
+              "unshare",
+              "invite",
+              "permission_grant",
+              "permission_revoke",
+              "link_create",
+              "link_delete"
+            ],
+            "export_and_exfiltration_risk": [
+              "export",
+              "bulk_export",
+              "print",
+              "copy",
+              "email_attachment",
+              "sync"
+            ],
+            "admin_and_config": [
+              "admin_action",
+              "policy_change",
+              "setting_change",
+              "role_assign",
+              "role_revoke",
+              "user_create",
+              "user_delete",
+              "user_suspend",
+              "user_activate",
+              "app_install",
+              "app_remove"
+            ],
+            "oauth_and_api": [
+              "oauth_grant",
+              "oauth_revoke",
+              "api_call",
+              "api_key_create",
+              "api_key_delete",
+              "webhook_create"
+            ],
+            "repository_and_code": [
+              "repo_clone",
+              "repo_fork",
+              "code_push",
+              "code_pull",
+              "branch_create",
+              "branch_delete",
+              "release_publish",
+              "deploy"
+            ]
+          }
+        },
+        "outcome": {
+          "description": "Result of the action.",
+          "fields": [
+            {
+              "field": "outcome",
+              "type": "enum",
+              "description": "Normalized action result.",
+              "filterable": true,
+              "indexed": true,
+              "valid_values": [
+                "success",
+                "failure",
+                "partial",
+                "blocked",
+                "denied",
+                "unknown"
+              ]
+            },
+            {
+              "field": "outcome_reason",
+              "type": "string",
+              "description": "Human-readable reason for the outcome, particularly for failures and denials.",
+              "filterable": true,
+              "example": "INVALID_CREDENTIALS"
+            }
+          ]
+        },
+        "user": {
+          "description": "Actor who performed the action. Resolved via Obsidian's Identity Graph.",
+          "fields": [
+            {
+              "field": "user.id",
+              "type": "string",
+              "description": "Obsidian's unified user ID (resolved across apps).",
+              "filterable": true,
+              "indexed": true
+            },
+            {
+              "field": "user.email",
+              "type": "string",
+              "description": "Primary email address. Cross-app join key.",
+              "filterable": true,
+              "indexed": true,
+              "example": "jsmith@corp.com"
+            },
+            {
+              "field": "user.display_name",
+              "type": "string",
+              "description": "Human-readable display name.",
+              "filterable": true
+            },
+            {
+              "field": "user.department",
+              "type": "string",
+              "description": "Department from HR/directory integration.",
+              "filterable": true,
+              "example": "Engineering"
+            },
+            {
+              "field": "user.title",
+              "type": "string",
+              "description": "Job title.",
+              "filterable": true
+            },
+            {
+              "field": "user.manager_email",
+              "type": "string",
+              "description": "Manager's email address.",
+              "filterable": true
+            },
+            {
+              "field": "user.account_status",
+              "type": "enum",
+              "description": "Current account status.",
+              "filterable": true,
+              "valid_values": [
+                "active",
+                "inactive",
+                "suspended",
+                "terminated",
+                "unknown"
+              ]
+            },
+            {
+              "field": "user.is_privileged",
+              "type": "boolean",
+              "description": "True if user holds admin or privileged role in any connected app.",
+              "filterable": true,
+              "indexed": true
+            },
+            {
+              "field": "user.is_service_account",
+              "type": "boolean",
+              "description": "True if Obsidian has classified the user as a service/system account.",
+              "filterable": true,
+              "indexed": true
+            },
+            {
+              "field": "user.is_external",
+              "type": "boolean",
+              "description": "True if the user is external (contractor, vendor, partner).",
+              "filterable": true
+            },
+            {
+              "field": "user.risk_score",
+              "type": "integer (0-100)",
+              "description": "Obsidian-computed dynamic risk score. Higher = higher risk.",
+              "filterable": true
+            },
+            {
+              "field": "user.risk_level",
+              "type": "enum",
+              "description": "Categorical risk level derived from risk_score.",
+              "filterable": true,
+              "indexed": true,
+              "valid_values": [
+                "critical",
+                "high",
+                "medium",
+                "low",
+                "none"
+              ]
+            },
+            {
+              "field": "user.app_specific_id",
+              "type": "string",
+              "description": "User ID within the source application.",
+              "filterable": true
+            },
+            {
+              "field": "user.app_roles",
+              "type": "array<string>",
+              "description": "Roles or permission levels in the source application.",
+              "filterable": true
+            },
+            {
+              "field": "user.hire_date",
+              "type": "date",
+              "description": "Employee hire date (from HR integration).",
+              "filterable": true
+            },
+            {
+              "field": "user.termination_date",
+              "type": "date",
+              "description": "Termination date (from HR integration). Populated for terminated accounts.",
+              "filterable": true
+            }
+          ]
+        },
+        "resource": {
+          "description": "Object on which the action was performed (file, record, repository, configuration item, etc.).",
+          "fields": [
+            {
+              "field": "resource.id",
+              "type": "string",
+              "description": "App-native resource identifier.",
+              "filterable": true
+            },
+            {
+              "field": "resource.name",
+              "type": "string",
+              "description": "Resource name or title.",
+              "filterable": true,
+              "example": "Q4-Financial-Report.xlsx"
+            },
+            {
+              "field": "resource.type",
+              "type": "string",
+              "description": "Normalized resource type.",
+              "filterable": true,
+              "indexed": true,
+              "common_values": [
+                "file",
+                "folder",
+                "email",
+                "record",
+                "repository",
+                "branch",
+                "pull_request",
+                "ticket",
+                "policy",
+                "user_account",
+                "api_key",
+                "role",
+                "report",
+                "dashboard",
+                "workflow"
+              ]
+            },
+            {
+              "field": "resource.owner_email",
+              "type": "string",
+              "description": "Email of resource owner.",
+              "filterable": true
+            },
+            {
+              "field": "resource.classification",
+              "type": "string",
+              "description": "Data classification label (if DLP integration or app-native labeling).",
+              "filterable": true,
+              "example": "Confidential"
+            },
+            {
+              "field": "resource.size_bytes",
+              "type": "integer",
+              "description": "File size in bytes (for file resources).",
+              "filterable": true
+            },
+            {
+              "field": "resource.path",
+              "type": "string",
+              "description": "File path or URL path to the resource.",
+              "filterable": true
+            },
+            {
+              "field": "resource.parent_id",
+              "type": "string",
+              "description": "ID of parent resource (parent folder, parent repository, etc.).",
+              "filterable": true
+            },
+            {
+              "field": "resource.is_sensitive",
+              "type": "boolean",
+              "description": "Obsidian-computed flag for resources matching sensitive data patterns.",
+              "filterable": true
+            },
+            {
+              "field": "resource.shared_externally",
+              "type": "boolean",
+              "description": "True if resource has been shared outside the organization.",
+              "filterable": true
+            }
+          ]
+        },
+        "target_user": {
+          "description": "The user on whom the action was performed (for identity-affecting actions like role assignment, account creation, impersonation).",
+          "fields": [
+            {
+              "field": "target_user.id",
+              "type": "string",
+              "description": "Obsidian unified ID of the target user.",
+              "filterable": true
+            },
+            {
+              "field": "target_user.email",
+              "type": "string",
+              "description": "Email of the target user.",
+              "filterable": true
+            },
+            {
+              "field": "target_user.display_name",
+              "type": "string",
+              "description": "Display name of target user.",
+              "filterable": true
+            },
+            {
+              "field": "target_user.is_privileged",
+              "type": "boolean",
+              "description": "True if target user is privileged.",
+              "filterable": true
+            },
+            {
+              "field": "target_user.account_status",
+              "type": "enum",
+              "description": "Account status of target user.",
+              "filterable": true,
+              "valid_values": [
+                "active",
+                "inactive",
+                "suspended",
+                "terminated"
+              ]
+            }
+          ]
+        },
+        "geo": {
+          "description": "Geographic context of the event based on source IP GeoIP resolution.",
+          "fields": [
+            {
+              "field": "geo.country",
+              "type": "string",
+              "description": "Country name (ISO 3166-1 full name).",
+              "filterable": true,
+              "indexed": true,
+              "example": "Russia"
+            },
+            {
+              "field": "geo.country_code",
+              "type": "string",
+              "description": "ISO 3166-1 alpha-2 country code.",
+              "filterable": true,
+              "example": "RU"
+            },
+            {
+              "field": "geo.region",
+              "type": "string",
+              "description": "State, province, or region.",
+              "filterable": true,
+              "example": "Moscow"
+            },
+            {
+              "field": "geo.city",
+              "type": "string",
+              "description": "City.",
+              "filterable": true,
+              "example": "Moscow"
+            },
+            {
+              "field": "geo.latitude",
+              "type": "float",
+              "description": "Latitude coordinate.",
+              "filterable": false
+            },
+            {
+              "field": "geo.longitude",
+              "type": "float",
+              "description": "Longitude coordinate.",
+              "filterable": false
+            },
+            {
+              "field": "geo.is_sanctioned",
+              "type": "boolean",
+              "description": "True if country appears on OFAC or configured sanctions list.",
+              "filterable": true
+            },
+            {
+              "field": "geo.is_high_risk",
+              "type": "boolean",
+              "description": "True if country is on Obsidian's or tenant's configured high-risk country list.",
+              "filterable": true
+            }
+          ]
+        },
+        "network": {
+          "description": "Network and IP context.",
+          "fields": [
+            {
+              "field": "ip_address",
+              "type": "string",
+              "description": "Source IP address of the client.",
+              "filterable": true,
+              "indexed": true,
+              "example": "203.0.113.45"
+            },
+            {
+              "field": "ip_is_proxy",
+              "type": "boolean",
+              "description": "True if IP is identified as proxy, VPN, or anonymizer.",
+              "filterable": true
+            },
+            {
+              "field": "ip_is_tor",
+              "type": "boolean",
+              "description": "True if IP is a known Tor exit node.",
+              "filterable": true
+            },
+            {
+              "field": "ip_reputation",
+              "type": "enum",
+              "description": "IP reputation classification.",
+              "filterable": true,
+              "valid_values": [
+                "clean",
+                "suspicious",
+                "malicious",
+                "unknown"
+              ]
+            },
+            {
+              "field": "isp",
+              "type": "string",
+              "description": "Internet Service Provider name.",
+              "filterable": true,
+              "example": "DigitalOcean, LLC"
+            },
+            {
+              "field": "asn",
+              "type": "string",
+              "description": "Autonomous System Number.",
+              "filterable": true
+            },
+            {
+              "field": "asn_org",
+              "type": "string",
+              "description": "Organization owning the ASN.",
+              "filterable": true
+            }
+          ]
+        },
+        "device": {
+          "description": "Device context. Populated when source app provides device metadata (requires MDM/EDR integration or app-native device enrollment).",
+          "fields": [
+            {
+              "field": "device.id",
+              "type": "string",
+              "description": "Device identifier from MDM or source app.",
+              "filterable": true
+            },
+            {
+              "field": "device.type",
+              "type": "enum",
+              "description": "Device category.",
+              "filterable": true,
+              "valid_values": [
+                "desktop",
+                "laptop",
+                "mobile",
+                "tablet",
+                "server",
+                "unknown"
+              ]
+            },
+            {
+              "field": "device.os",
+              "type": "string",
+              "description": "Operating system name.",
+              "filterable": true,
+              "example": "Windows 11"
+            },
+            {
+              "field": "device.os_version",
+              "type": "string",
+              "description": "OS version string.",
+              "filterable": true
+            },
+            {
+              "field": "device.is_managed",
+              "type": "boolean",
+              "description": "True if device appears in connected MDM.",
+              "filterable": true
+            },
+            {
+              "field": "device.is_compliant",
+              "type": "boolean",
+              "description": "True if device meets MDM compliance policy.",
+              "filterable": true
+            },
+            {
+              "field": "device.browser",
+              "type": "string",
+              "description": "Browser name (when available from user agent).",
+              "filterable": true
+            },
+            {
+              "field": "device.user_agent",
+              "type": "string",
+              "description": "Full HTTP User-Agent string.",
+              "filterable": true
+            }
+          ]
+        },
+        "session": {
+          "description": "Session context. Correlates multiple events to the same logical user session.",
+          "fields": [
+            {
+              "field": "session.id",
+              "type": "string",
+              "description": "Obsidian-assigned session correlation ID.",
+              "filterable": true
+            },
+            {
+              "field": "session.app_session_id",
+              "type": "string",
+              "description": "Source app session identifier.",
+              "filterable": true
+            },
+            {
+              "field": "session.start_time",
+              "type": "datetime",
+              "description": "Session start timestamp.",
+              "filterable": true
+            },
+            {
+              "field": "session.is_new",
+              "type": "boolean",
+              "description": "True if this is the first event in a new session.",
+              "filterable": true
+            }
+          ]
+        },
+        "oauth": {
+          "description": "OAuth application context. Populated for OAuth grant/revoke events and API access events mediated by OAuth tokens.",
+          "fields": [
+            {
+              "field": "oauth.app_id",
+              "type": "string",
+              "description": "OAuth application client ID.",
+              "filterable": true
+            },
+            {
+              "field": "oauth.app_name",
+              "type": "string",
+              "description": "Display name of the OAuth application.",
+              "filterable": true
+            },
+            {
+              "field": "oauth.scopes",
+              "type": "array<string>",
+              "description": "List of OAuth scopes granted to the application.",
+              "filterable": true
+            },
+            {
+              "field": "oauth.grant_type",
+              "type": "string",
+              "description": "OAuth grant type used.",
+              "filterable": true,
+              "valid_values": [
+                "authorization_code",
+                "client_credentials",
+                "refresh_token",
+                "implicit"
+              ]
+            },
+            {
+              "field": "oauth.risk_score",
+              "type": "integer",
+              "description": "Obsidian-computed risk score for the OAuth application.",
+              "filterable": true
+            },
+            {
+              "field": "oauth.publisher_verified",
+              "type": "boolean",
+              "description": "True if the OAuth app publisher identity is verified.",
+              "filterable": true
+            },
+            {
+              "field": "oauth.token_type",
+              "type": "string",
+              "description": "Token type (access_token, refresh_token).",
+              "filterable": true
+            }
+          ]
+        },
+        "risk": {
+          "description": "Obsidian-computed behavioral risk signals for the event.",
+          "fields": [
+            {
+              "field": "risk.score",
+              "type": "integer (0-100)",
+              "description": "Event-level risk score.",
+              "filterable": true
+            },
+            {
+              "field": "risk.level",
+              "type": "enum",
+              "description": "Categorical risk level for the event.",
+              "filterable": true,
+              "valid_values": [
+                "critical",
+                "high",
+                "medium",
+                "low",
+                "none"
+              ]
+            },
+            {
+              "field": "risk.signals",
+              "type": "array<string>",
+              "description": "List of behavioral risk signals contributing to the risk score.",
+              "filterable": true,
+              "examples": [
+                "new_country",
+                "new_device",
+                "impossible_travel",
+                "high_volume",
+                "off_hours",
+                "sanctioned_country",
+                "tor_exit",
+                "new_app",
+                "peer_group_anomaly"
+              ]
+            },
+            {
+              "field": "risk.impossible_travel",
+              "type": "boolean",
+              "description": "True if event is flagged as impossible travel.",
+              "filterable": true
+            },
+            {
+              "field": "risk.new_country",
+              "type": "boolean",
+              "description": "True if event originates from a country not seen for this user in the baseline period.",
+              "filterable": true
+            },
+            {
+              "field": "risk.new_device",
+              "type": "boolean",
+              "description": "True if device fingerprint has not been seen for this user before.",
+              "filterable": true
+            },
+            {
+              "field": "risk.off_hours",
+              "type": "boolean",
+              "description": "True if event occurred outside the user's normal active hours.",
+              "filterable": true
+            },
+            {
+              "field": "risk.volume_anomaly",
+              "type": "boolean",
+              "description": "True if action count significantly exceeds user baseline.",
+              "filterable": true
+            }
+          ]
+        },
+        "severity": {
+          "description": "Event severity classification.",
+          "fields": [
+            {
+              "field": "severity",
+              "type": "enum",
+              "description": "Obsidian-assigned event severity.",
+              "filterable": true,
+              "indexed": true,
+              "valid_values": [
+                "critical",
+                "high",
+                "medium",
+                "low",
+                "informational"
+              ]
+            }
+          ]
+        },
+        "app_specific": {
+          "description": "Application-specific extended fields. These are nested under the app namespace and only populated for events from the corresponding application.",
+          "salesforce": {
+            "fields": [
+              {
+                "field": "salesforce.object_type",
+                "type": "string",
+                "description": "Salesforce object type (Account, Lead, Opportunity, etc.).",
+                "filterable": true
+              },
+              {
+                "field": "salesforce.object_id",
+                "type": "string",
+                "description": "Salesforce record ID.",
+                "filterable": true
+              },
+              {
+                "field": "salesforce.query",
+                "type": "string",
+                "description": "SOQL query executed (for report/query events).",
+                "filterable": true
+              },
+              {
+                "field": "salesforce.client_type",
+                "type": "string",
+                "description": "Salesforce client type (browser, API, mobile).",
+                "filterable": true
+              }
+            ]
+          },
+          "github": {
+            "fields": [
+              {
+                "field": "github.org",
+                "type": "string",
+                "description": "GitHub organization name.",
+                "filterable": true
+              },
+              {
+                "field": "github.repo",
+                "type": "string",
+                "description": "Repository name.",
+                "filterable": true
+              },
+              {
+                "field": "github.visibility",
+                "type": "enum",
+                "description": "Repository visibility.",
+                "filterable": true,
+                "valid_values": [
+                  "public",
+                  "private",
+                  "internal"
+                ]
+              },
+              {
+                "field": "github.ref",
+                "type": "string",
+                "description": "Git reference (branch, tag).",
+                "filterable": true
+              }
+            ]
+          },
+          "microsoft_365": {
+            "fields": [
+              {
+                "field": "microsoft_365.workload",
+                "type": "string",
+                "description": "M365 workload (Exchange, SharePoint, OneDrive, Teams).",
+                "filterable": true
+              },
+              {
+                "field": "microsoft_365.client_app",
+                "type": "string",
+                "description": "Client application name.",
+                "filterable": true
+              },
+              {
+                "field": "microsoft_365.operation",
+                "type": "string",
+                "description": "Raw M365 operation name.",
+                "filterable": true
+              }
+            ]
+          },
+          "google_workspace": {
+            "fields": [
+              {
+                "field": "google_workspace.service",
+                "type": "string",
+                "description": "Google service (drive, gmail, admin, meet).",
+                "filterable": true
+              },
+              {
+                "field": "google_workspace.visibility",
+                "type": "string",
+                "description": "Document visibility (private, domain, public).",
+                "filterable": true
+              }
+            ]
+          },
+          "slack": {
+            "fields": [
+              {
+                "field": "slack.channel_id",
+                "type": "string",
+                "description": "Slack channel identifier.",
+                "filterable": true
+              },
+              {
+                "field": "slack.channel_type",
+                "type": "enum",
+                "description": "Channel type.",
+                "filterable": true,
+                "valid_values": [
+                  "public",
+                  "private",
+                  "dm",
+                  "mpim"
+                ]
+              },
+              {
+                "field": "slack.workspace_id",
+                "type": "string",
+                "description": "Slack workspace identifier.",
+                "filterable": true
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "detection_engineering": {
+    "detection_rule_structure": {
+      "description": "Obsidian detection rules consist of an OQL query defining the triggering condition, metadata for classification and routing, and optional response actions.",
+      "required_fields": [
+        {
+          "field": "name",
+          "description": "Unique, descriptive rule name."
+        },
+        {
+          "field": "description",
+          "description": "What the rule detects, why it matters, and investigation guidance."
+        },
+        {
+          "field": "severity",
+          "description": "Critical | High | Medium | Low | Informational"
+        },
+        {
+          "field": "query",
+          "description": "OQL query defining the detection condition."
+        },
+        {
+          "field": "enabled",
+          "description": "Boolean. Set false during development and testing."
+        }
+      ],
+      "optional_fields": [
+        {
+          "field": "tags",
+          "description": "Classification tags (e.g., ['exfiltration', 'insider-threat'])."
+        },
+        {
+          "field": "mitre_tactics",
+          "description": "MITRE ATT&CK tactic identifiers."
+        },
+        {
+          "field": "mitre_techniques",
+          "description": "MITRE ATT&CK technique IDs (e.g., T1567.002)."
+        },
+        {
+          "field": "apps",
+          "description": "Scope rule to specific applications (optimization \u2014 not required if app filter is in query)."
+        },
+        {
+          "field": "suppression",
+          "description": "Conditions under which matched events should not generate alerts."
+        },
+        {
+          "field": "actions",
+          "description": "Automated response: webhook, Jira, Slack, PagerDuty, ServiceNow."
+        },
+        {
+          "field": "schedule",
+          "description": "For scheduled/batch rules: cron-style evaluation schedule."
+        },
+        {
+          "field": "window",
+          "description": "Time window for threshold/aggregate-based rules (e.g., '1h', '24h')."
+        },
+        {
+          "field": "group_by",
+          "description": "Field(s) to group alert instances by (e.g., group_by: user.email creates one alert per user)."
+        }
+      ]
+    },
+    "detection_patterns": {
+      "account_takeover_new_country": {
+        "description": "Successful authentication from a country not previously seen for the user.",
+        "query": "action = \"login\" AND outcome = \"success\" AND risk.new_country = true AND user.is_service_account = false",
+        "time_window": "real-time",
+        "severity": "High",
+        "false_positive_mitigations": [
+          "Add NOT geo.country in [<approved_vpn_exit_countries>] if VPN exits in multiple countries",
+          "Suppress for users with 'frequent_traveler' tag",
+          "Cross-reference with corporate travel system data via suppression list"
+        ],
+        "escalation_signals": [
+          "geo.is_sanctioned = true",
+          "ip_is_tor = true",
+          "user.risk_level in [\"critical\",\"high\"]"
+        ]
+      },
+      "impossible_travel": {
+        "description": "User authenticated from two geographically distant locations within a timeframe physically impossible for travel.",
+        "query": "action = \"login\" AND outcome = \"success\" AND risk.impossible_travel = true",
+        "time_window": "real-time",
+        "severity": "High",
+        "notes": "Obsidian natively computes impossible_travel signal. Tune distance/time thresholds in platform behavioral settings."
+      },
+      "bulk_data_download": {
+        "description": "User downloads an unusually high volume of files within a short window \u2014 potential data exfiltration.",
+        "query": "action in [\"download\", \"export\"] AND user.is_service_account = false | time(1h) | aggregate(count() by user.email, app) having count > 50",
+        "time_window": "1h",
+        "severity": "High",
+        "threshold_tuning": "Adjust count threshold based on baseline per app. Storage apps (Box, Drive) may need higher thresholds than CRM.",
+        "escalation_signals": [
+          "resource.classification = \"Confidential\"",
+          "resource.is_sensitive = true",
+          "user.account_status = \"terminated\""
+        ]
+      },
+      "terminated_user_activity": {
+        "description": "Activity from a user account after their termination date \u2014 indicates improper deprovisioning or account reactivation.",
+        "query": "user.account_status = \"terminated\" AND outcome = \"success\"",
+        "time_window": "real-time",
+        "severity": "Critical",
+        "notes": "Requires HR integration (Workday, BambooHR) to populate user.termination_date and account_status."
+      },
+      "sensitive_file_external_share": {
+        "description": "Sensitive or classified file shared with external recipients.",
+        "query": "action in [\"share\", \"share_externally\"] AND (resource.is_sensitive = true OR resource.classification in [\"Confidential\", \"Restricted\", \"Secret\"]) AND (user.is_external = false)",
+        "time_window": "real-time",
+        "severity": "High",
+        "app_scope": [
+          "google_workspace",
+          "microsoft_365",
+          "box",
+          "dropbox"
+        ]
+      },
+      "privileged_account_off_hours": {
+        "description": "Privileged administrator performing sensitive actions outside normal business hours.",
+        "query": "user.is_privileged = true AND action in [\"admin_action\", \"policy_change\", \"role_assign\", \"setting_change\"] AND risk.off_hours = true",
+        "time_window": "real-time",
+        "severity": "Medium"
+      },
+      "mfa_bypass_or_downgrade": {
+        "description": "Authentication succeeding without MFA where MFA is expected, or MFA method downgraded.",
+        "query": "action = \"login\" AND outcome = \"success\" AND app = \"okta\" AND (outcome_reason contains \"mfa_bypass\" OR outcome_reason contains \"no_mfa\")",
+        "time_window": "real-time",
+        "severity": "High"
+      },
+      "high_risk_oauth_grant": {
+        "description": "User grants OAuth access to a high-risk or unverified third-party application with sensitive scopes.",
+        "query": "action = \"oauth_grant\" AND (oauth.risk_score > 70 OR oauth.publisher_verified = false) AND oauth.scopes contains \"write\"",
+        "time_window": "real-time",
+        "severity": "High",
+        "notes": "Adjust oauth.risk_score threshold based on tenant risk appetite. 70+ is a reasonable starting point."
+      },
+      "github_public_repo_creation": {
+        "description": "Private GitHub repository made public \u2014 potential source code exposure.",
+        "query": "app = \"github\" AND action = \"setting_change\" AND github.visibility = \"public\" AND resource.type = \"repository\"",
+        "time_window": "real-time",
+        "severity": "Critical"
+      },
+      "github_repo_fork_to_personal": {
+        "description": "Corporate code repository forked to a personal GitHub account.",
+        "query": "app = \"github\" AND action = \"repo_fork\" AND user.is_external = false",
+        "time_window": "real-time",
+        "severity": "High",
+        "notes": "Validate that target fork destination is outside corporate GitHub org. May require github.fork_target_org field if available."
+      },
+      "salesforce_bulk_record_export": {
+        "description": "Mass Salesforce record export or report download \u2014 potential CRM data exfiltration.",
+        "query": "app = \"salesforce\" AND action in [\"export\", \"download\"] AND salesforce.object_type in [\"Account\", \"Lead\", \"Contact\", \"Opportunity\"] | time(1h) | aggregate(count() by user.email) having count > 100",
+        "time_window": "1h",
+        "severity": "High"
+      },
+      "admin_privilege_escalation": {
+        "description": "Non-admin user granted admin or privileged role in a SaaS application.",
+        "query": "action = \"role_assign\" AND (target_user.is_privileged = false) AND user.is_privileged = true",
+        "time_window": "real-time",
+        "severity": "High",
+        "notes": "Alert when a privilege grant makes target_user.is_privileged flip to true."
+      },
+      "credential_stuffing_failed_logins": {
+        "description": "High volume of failed logins from a single IP across multiple user accounts \u2014 credential stuffing indicator.",
+        "query": "action = \"login\" AND outcome = \"failure\" | time(15m) | aggregate(count() by ip_address, count_distinct(user.email) by ip_address) having count > 20 AND count_distinct > 5",
+        "time_window": "15m",
+        "severity": "High",
+        "notes": "Threshold values should be tuned to baseline login failure rates."
+      },
+      "suspicious_proxy_or_tor_login": {
+        "description": "Successful authentication from a Tor exit node or known proxy service.",
+        "query": "action = \"login\" AND outcome = \"success\" AND (ip_is_tor = true OR ip_reputation = \"malicious\")",
+        "time_window": "real-time",
+        "severity": "Critical"
+      },
+      "insider_data_staging": {
+        "description": "User accessing and downloading large volumes of sensitive resources shortly before departure indicators (e.g., resignation) \u2014 insider threat pattern.",
+        "query": "action in [\"download\", \"export\", \"copy\"] AND resource.is_sensitive = true AND user.account_status = \"active\" | time(7d) | aggregate(sum(resource.size_bytes) by user.email) having sum > 1073741824",
+        "time_window": "7d",
+        "severity": "High",
+        "notes": "1073741824 bytes = 1 GB. Correlate with HR offboarding signals for highest fidelity."
+      },
+      "new_api_key_creation_external_ip": {
+        "description": "API key or service account credential created from an unrecognized external IP.",
+        "query": "action = \"api_key_create\" AND ip_is_proxy = false AND risk.new_country = true",
+        "time_window": "real-time",
+        "severity": "High"
+      },
+      "cross_app_lateral_movement": {
+        "description": "User accesses an unusual combination of applications in a single session \u2014 potential lateral movement post-compromise.",
+        "query": "outcome = \"success\" | time(1h) | aggregate(count_distinct(app) by user.email, session.id) having count_distinct > 6",
+        "time_window": "1h",
+        "severity": "Medium",
+        "notes": "Adjust count_distinct threshold based on normal multi-app usage patterns for your organization."
+      }
+    },
+    "tuning_guidelines": {
+      "false_positive_reduction": [
+        "Always exclude service accounts using: AND user.is_service_account = false",
+        "Scope bulk download rules by app \u2014 storage apps (Box, Drive) have higher legitimate download volumes than CRM.",
+        "Maintain a sanctioned-countries allowlist and subtract from geo.is_high_risk rules for traveling employees.",
+        "Use user.department to scope admin-action rules to non-IT departments when detecting unauthorized admin activity.",
+        "Implement suppression rules keyed on user.email for known automation accounts or developer test accounts.",
+        "Leverage risk.signals array to require multiple concurrent signals before alerting \u2014 reduces single-signal noise.",
+        "For threshold rules, establish per-app, per-action baselines from 30-day historical data before setting thresholds.",
+        "Use group_by in rule configuration to deduplicate alerts per-user rather than per-event."
+      ],
+      "false_negative_reduction": [
+        "Monitor action_raw field for new vendor event types that may not yet be normalized to your expected action values.",
+        "Test queries against historical data before enabling to verify they match known threat scenarios.",
+        "Ensure HR integration is active and current \u2014 stale account_status data causes missed terminated-user detections.",
+        "Cover both browser-based (device.browser is not null) and API-based (device.user_agent contains scripting framework) access patterns.",
+        "Validate that all target SaaS apps are connected and actively ingesting \u2014 gaps in integration = blind spots.",
+        "For cross-app rules, verify that user.email is consistently the identity resolution field for all apps in scope."
+      ],
+      "performance_optimization": [
+        "Always include 'app' as the first filter clause \u2014 it is the most selective indexed field.",
+        "Follow with 'action' as the second filter clause before adding context fields.",
+        "Avoid leading 'matches' (regex) clauses \u2014 pair regex with equality pre-filter.",
+        "Prefer 'in' operator over multiple 'OR' conditions for the same field.",
+        "Specify explicit time windows in all detection rule queries.",
+        "For aggregate rules, narrow the event set with field filters before the pipe to reduce aggregation cardinality.",
+        "Use 'is not null' checks before filtering on app-specific fields to prevent unnecessary full scans.",
+        "Limit cross-app queries (no 'app' filter) to investigation use \u2014 not streaming detection rules."
+      ]
+    },
+    "testing_and_validation": {
+      "pre_deployment_checklist": [
+        "Run query in Investigation Workspace against historical data and verify result count is non-zero and expected.",
+        "Validate that all field names exist in the Obsidian schema and are populated for the target app.",
+        "Check query syntax parses without errors in the OQL editor.",
+        "Test boundary conditions: query with opposite outcome to verify correct exclusion.",
+        "Verify aggregation thresholds with historical data \u2014 check 7-day baseline against threshold value.",
+        "Validate group_by behavior \u2014 confirm alerts are deduplicated at the correct level (per user, per app, etc.).",
+        "Run inverse query to audit exclusions: confirm suppressed events are legitimately benign.",
+        "Check estimated daily alert volume \u2014 >50 alerts/day from a single rule indicates tuning needed.",
+        "Validate MITRE technique mapping and populate rule metadata.",
+        "Enable rule in disabled state in production and manually verify query returns expected recent events.",
+        "Test response actions (webhook, Jira) against a test alert before full enablement."
+      ],
+      "investigation_validation_queries": {
+        "all_app_coverage_check": {
+          "description": "Verify all expected apps are actively ingesting events.",
+          "query": "outcome = \"success\" | time(24h) | aggregate(count() by app)"
+        },
+        "user_activity_baseline": {
+          "description": "Establish baseline download volume per user for threshold tuning.",
+          "query": "action = \"download\" | time(30d) | aggregate(count() by user.email) | sort(count desc)"
+        },
+        "failed_login_baseline": {
+          "description": "Establish baseline failure rate for brute-force threshold tuning.",
+          "query": "action = \"login\" AND outcome = \"failure\" | time(7d) | aggregate(count() by user.email, ip_address)"
+        },
+        "sensitive_resource_access_audit": {
+          "description": "Review all access to sensitive resources over 30 days.",
+          "query": "resource.is_sensitive = true AND action in [\"read\", \"download\", \"export\"] | time(30d) | aggregate(count() by user.email, app)"
+        },
+        "high_risk_user_activity": {
+          "description": "All recent activity from high/critical risk users.",
+          "query": "user.risk_level in [\"critical\", \"high\"] AND outcome = \"success\" | time(24h) | sort(event.timestamp desc)"
+        },
+        "external_share_audit": {
+          "description": "All external sharing events for audit and tuning.",
+          "query": "action in [\"share\", \"share_externally\"] AND resource.shared_externally = true | time(7d)"
+        }
+      },
+      "test_scenario_matrix": {
+        "account_takeover": {
+          "simulate": "Login to a test SaaS app from a VPN endpoint in a new country using test credentials.",
+          "expected_events": [
+            "action = login, outcome = success, risk.new_country = true"
+          ],
+          "verify_field": "risk.new_country = true AND geo.country != <home country>"
+        },
+        "bulk_download": {
+          "simulate": "Download >50 files from Box or Google Drive within a 1-hour window using a test account.",
+          "expected_events": [
+            "action = download, app = box, count > 50 in 1h"
+          ],
+          "verify_field": "Aggregate count exceeds threshold in query result"
+        },
+        "privilege_escalation": {
+          "simulate": "Grant admin role to a test user in a connected app.",
+          "expected_events": [
+            "action = role_assign, target_user.email = test@corp.com"
+          ],
+          "verify_field": "action = role_assign AND target_user.email = test@corp.com"
+        },
+        "oauth_grant": {
+          "simulate": "Authorize a new OAuth app with write scopes in Google Workspace or Microsoft 365.",
+          "expected_events": [
+            "action = oauth_grant, oauth.scopes contains write"
+          ],
+          "verify_field": "oauth.app_name, oauth.risk_score, oauth.publisher_verified"
+        }
+      }
+    }
+  },
+  "output_formatting_standards": {
+    "normalized_event_output": {
+      "description": "Standard flattened output schema for Obsidian events exported to SIEM or data pipelines.",
+      "timestamp_format": "ISO 8601 UTC: YYYY-MM-DDTHH:MM:SS.sssZ",
+      "null_representation": "null (JSON null \u2014 do not use empty string for absent fields)",
+      "array_representation": "JSON array (e.g., [\"download\", \"export\"])",
+      "boolean_representation": "JSON boolean (true/false \u2014 not string 'true'/'false')",
+      "example_normalized_event": {
+        "event_id": "evt_8a3f2c1d-4b5e-6c7d-8e9f-0a1b2c3d4e5f",
+        "event_timestamp": "2024-06-15T14:32:01.000Z",
+        "event_ingested_at": "2024-06-15T14:33:45.000Z",
+        "app": "salesforce",
+        "app_instance": "salesforce-prod",
+        "action": "export",
+        "action_category": "export",
+        "action_raw": "ReportExport",
+        "outcome": "success",
+        "outcome_reason": null,
+        "severity": "high",
+        "user_email": "jsmith@corp.com",
+        "user_display_name": "John Smith",
+        "user_department": "Sales",
+        "user_is_privileged": false,
+        "user_is_service_account": false,
+        "user_is_external": false,
+        "user_account_status": "active",
+        "user_risk_score": 82,
+        "user_risk_level": "high",
+        "resource_name": "Q4_Customer_List.csv",
+        "resource_type": "report",
+        "resource_size_bytes": 52428800,
+        "resource_is_sensitive": true,
+        "resource_classification": "Confidential",
+        "ip_address": "203.0.113.45",
+        "ip_is_proxy": false,
+        "ip_is_tor": false,
+        "ip_reputation": "clean",
+        "geo_country": "Russia",
+        "geo_country_code": "RU",
+        "geo_city": "Moscow",
+        "geo_is_sanctioned": false,
+        "geo_is_high_risk": true,
+        "risk_score": 88,
+        "risk_level": "critical",
+        "risk_signals": [
+          "new_country",
+          "off_hours",
+          "high_volume"
+        ],
+        "risk_new_country": true,
+        "risk_off_hours": true,
+        "risk_impossible_travel": false,
+        "device_is_managed": false,
+        "device_type": "desktop",
+        "salesforce_object_type": "Report",
+        "salesforce_client_type": "browser"
+      }
+    },
+    "alert_output_schema": {
+      "description": "Standard alert record produced by Obsidian for each detection rule match.",
+      "required_fields": [
+        "alert_id",
+        "alert_title",
+        "alert_severity",
+        "alert_status",
+        "rule_id",
+        "rule_name",
+        "app",
+        "event_time",
+        "user_email",
+        "ip_address",
+        "geo_country",
+        "outcome",
+        "risk_level"
+      ],
+      "example": {
+        "alert_id": "alrt_a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+        "alert_title": "Bulk Salesforce Report Export from High-Risk Country",
+        "alert_severity": "Critical",
+        "alert_status": "Open",
+        "alert_created_at": "2024-06-15T14:34:00.000Z",
+        "rule_id": "OBSIDIAN-EXFIL-005",
+        "rule_name": "Bulk CRM Data Export - High Risk Context",
+        "mitre_tactic": "Exfiltration",
+        "mitre_technique": "T1567.002",
+        "app": "salesforce",
+        "event_id": "evt_8a3f2c1d-4b5e-6c7d-8e9f-0a1b2c3d4e5f",
+        "event_time": "2024-06-15T14:32:01.000Z",
+        "user_email": "jsmith@corp.com",
+        "user_display_name": "John Smith",
+        "user_department": "Sales",
+        "user_risk_score": 82,
+        "user_risk_level": "high",
+        "ip_address": "203.0.113.45",
+        "geo_country": "Russia",
+        "geo_is_high_risk": true,
+        "resource_name": "Q4_Customer_List.csv",
+        "resource_classification": "Confidential",
+        "outcome": "success",
+        "risk_signals": [
+          "new_country",
+          "off_hours",
+          "high_volume"
+        ],
+        "aggregate_download_count": 127,
+        "aggregate_window": "1h",
+        "recommended_actions": [
+          "Contact user manager to verify if travel to Russia is authorized",
+          "Review all events for this user in the last 24 hours",
+          "Check if report data has been forwarded externally",
+          "Suspend account pending investigation if travel unconfirmed",
+          "Revoke active sessions in all SaaS apps"
+        ]
+      }
+    },
+    "siem_integration_formats": {
+      "splunk_cim_mapping": {
+        "description": "Obsidian field-to-Splunk CIM Authentication and Web datamodel mapping.",
+        "authentication_datamodel": {
+          "app": "app",
+          "action": "action (map: login\u2192authentication, login_failed\u2192failure)",
+          "src": "ip_address",
+          "src_ip": "ip_address",
+          "user": "user.email",
+          "user_name": "user.display_name",
+          "dest": "app",
+          "_time": "event.timestamp",
+          "signature": "action",
+          "vendor_product": "Obsidian Security"
+        }
+      },
+      "sentinel_schema": {
+        "description": "Microsoft Sentinel table mapping for Obsidian events via the Obsidian data connector or custom Log Analytics workspace.",
+        "table": "ObsidianActivity_CL",
+        "key_fields": {
+          "TimeGenerated": "event.timestamp",
+          "App_s": "app",
+          "Action_s": "action",
+          "Outcome_s": "outcome",
+          "UserEmail_s": "user.email",
+          "SrcIpAddr_s": "ip_address",
+          "GeoCountry_s": "geo.country",
+          "RiskLevel_s": "risk.level",
+          "RiskScore_i": "risk.score",
+          "Severity_s": "severity",
+          "EventId_g": "event.id"
+        }
+      },
+      "cef_format": {
+        "header": "CEF:0|Obsidian Security|Obsidian SaaS Security|1.0|<action>|<alert_title>|<severity_int>|",
+        "severity_mapping": {
+          "informational": 1,
+          "low": 3,
+          "medium": 5,
+          "high": 7,
+          "critical": 9
+        },
+        "extensions": {
+          "deviceVendor": "Obsidian Security",
+          "deviceProduct": "Obsidian SaaS Security Platform",
+          "deviceVersion": "1.0",
+          "deviceEventClassId": "action",
+          "name": "alert_title",
+          "severity": "severity (integer per mapping above)",
+          "src": "ip_address",
+          "suser": "user.email",
+          "duser": "target_user.email",
+          "app": "app",
+          "outcome": "outcome",
+          "start": "event.timestamp",
+          "cs1": "user.risk_level",
+          "cs1Label": "userRiskLevel",
+          "cs2": "risk.signals (comma-joined)",
+          "cs2Label": "riskSignals",
+          "cs3": "geo.country",
+          "cs3Label": "sourceCountry",
+          "cs4": "resource.classification",
+          "cs4Label": "dataClassification",
+          "cn1": "risk.score",
+          "cn1Label": "riskScore"
+        }
+      }
+    },
+    "report_output_standards": {
+      "saas_activity_summary": {
+        "required_columns": [
+          "user_email",
+          "app",
+          "action",
+          "outcome",
+          "event_count",
+          "first_seen",
+          "last_seen",
+          "src_countries"
+        ],
+        "group_by": [
+          "user_email",
+          "app"
+        ],
+        "sort_default": "event_count desc",
+        "query": "outcome = \"success\" | time(30d) | aggregate(count() by user.email, app)"
+      },
+      "high_risk_user_report": {
+        "required_columns": [
+          "user_email",
+          "user_department",
+          "user_risk_score",
+          "user_risk_level",
+          "apps_accessed",
+          "sensitive_resource_count",
+          "external_share_count"
+        ],
+        "filter": "user.risk_level in [\"critical\", \"high\"]",
+        "sort_default": "user_risk_score desc"
+      },
+      "external_sharing_report": {
+        "required_columns": [
+          "user_email",
+          "app",
+          "resource_name",
+          "resource_classification",
+          "share_target",
+          "event_timestamp",
+          "geo_country"
+        ],
+        "filter": "action in [\"share\", \"share_externally\"] AND resource.shared_externally = true",
+        "sort_default": "event_timestamp desc"
+      },
+      "oauth_application_inventory": {
+        "required_columns": [
+          "oauth_app_name",
+          "oauth_app_id",
+          "oauth_scopes",
+          "oauth_risk_score",
+          "oauth_publisher_verified",
+          "granted_user_count",
+          "grant_date"
+        ],
+        "filter": "action = \"oauth_grant\"",
+        "sort_default": "oauth_risk_score desc"
+      }
+    }
+  },
+  "mitre_attack_mapping": {
+    "description": "MITRE ATT&CK technique mappings to Obsidian OQL detection patterns for coverage tracking.",
+    "mappings": [
+      {
+        "technique_id": "T1078.004",
+        "technique": "Valid Accounts: Cloud Accounts",
+        "tactic": "Initial Access, Persistence",
+        "oql_pattern": "action = \"login\" AND outcome = \"success\" AND risk.new_country = true",
+        "detection_notes": "Supplement with impossible_travel and new_device signals for higher confidence."
+      },
+      {
+        "technique_id": "T1110.003",
+        "technique": "Credential Stuffing",
+        "tactic": "Credential Access",
+        "oql_pattern": "action = \"login\" AND outcome = \"failure\" | time(15m) | aggregate(count() by ip_address, count_distinct(user.email) by ip_address) having count > 20",
+        "detection_notes": "High distinct user count from single IP in short window is high-confidence signal."
+      },
+      {
+        "technique_id": "T1567.002",
+        "technique": "Exfiltration to Cloud Storage",
+        "tactic": "Exfiltration",
+        "oql_pattern": "action in [\"download\", \"export\", \"share_externally\"] AND resource.is_sensitive = true | time(1h) | aggregate(count() by user.email) having count > 50",
+        "detection_notes": "Adjust threshold per app baseline. Combine with geo anomaly for higher severity."
+      },
+      {
+        "technique_id": "T1098.003",
+        "technique": "Account Manipulation: Additional Cloud Roles",
+        "tactic": "Persistence, Privilege Escalation",
+        "oql_pattern": "action = \"role_assign\" AND user.is_privileged = true",
+        "detection_notes": "Alert on any admin-to-admin role assignment outside change windows."
+      },
+      {
+        "technique_id": "T1528",
+        "technique": "Steal Application Access Token",
+        "tactic": "Credential Access",
+        "oql_pattern": "action = \"oauth_grant\" AND oauth.risk_score > 70",
+        "detection_notes": "High-risk OAuth apps with write scopes are primary targets for token theft."
+      },
+      {
+        "technique_id": "T1552.001",
+        "technique": "Unsecured Credentials: Credentials in Files",
+        "tactic": "Credential Access",
+        "oql_pattern": "app = \"github\" AND action in [\"code_push\", \"create\"] AND resource.name matches \".*\\.(env|pem|key|credentials)$\"",
+        "detection_notes": "Sensitive file extension pushed to repository \u2014 potential secrets exposure."
+      },
+      {
+        "technique_id": "T1190",
+        "technique": "Exploit Public-Facing Application",
+        "tactic": "Initial Access",
+        "oql_pattern": "app = \"github\" AND action = \"setting_change\" AND github.visibility = \"public\"",
+        "detection_notes": "Repository visibility change to public exposes internal code to the internet."
+      },
+      {
+        "technique_id": "T1136.003",
+        "technique": "Create Account: Cloud Account",
+        "tactic": "Persistence",
+        "oql_pattern": "action = \"user_create\" AND user.is_privileged = true AND risk.off_hours = true",
+        "detection_notes": "Privileged account creation during off-hours is a persistence indicator."
+      },
+      {
+        "technique_id": "T1531",
+        "technique": "Account Access Removal",
+        "tactic": "Impact",
+        "oql_pattern": "action in [\"user_delete\", \"user_suspend\"] AND user.is_privileged = true",
+        "detection_notes": "Deletion or suspension of privileged accounts by non-super-admin actors."
+      },
+      {
+        "technique_id": "T1213",
+        "technique": "Data from Information Repositories",
+        "tactic": "Collection",
+        "oql_pattern": "app = \"confluence\" AND action in [\"export\", \"download\"] | time(1h) | aggregate(count() by user.email) having count > 20",
+        "detection_notes": "Bulk knowledge base export may indicate insider data collection."
+      }
+    ]
+  },
+  "common_errors_and_troubleshooting": {
+    "query_errors": [
+      {
+        "error": "Parse error: unexpected token",
+        "common_causes": [
+          "Missing quotes around multi-word string values",
+          "Incorrect operator spelling (== instead of =)",
+          "Unclosed parenthesis in compound expression",
+          "Missing 'having' keyword after aggregate pipe"
+        ],
+        "resolution": "Use OQL editor autocomplete and syntax highlighting. Wrap all string values in double quotes."
+      },
+      {
+        "error": "Field not found: <field_name>",
+        "common_causes": [
+          "Typo in field path (e.g., 'users.email' instead of 'user.email')",
+          "App-specific field queried without scoping to that app",
+          "Field namespace changed in schema update"
+        ],
+        "resolution": "Validate field path against data model reference. Check Obsidian schema changelog. Add app filter when using app-specific fields."
+      },
+      {
+        "error": "Query returns zero results",
+        "causes": [
+          "App not connected or no recent events",
+          "Action value does not match Obsidian normalization taxonomy",
+          "Null field filtered with = operator instead of 'is null'",
+          "Time window too narrow",
+          "String value case mismatch (though OQL is case-insensitive, check for whitespace)"
+        ],
+        "diagnostic": "Remove filters one by one starting from most restrictive. Start with just 'app = X | time(24h)' and progressively add conditions."
+      },
+      {
+        "error": "Aggregate result truncated",
+        "causes": [
+          "Group cardinality exceeded 10,000 unique values"
+        ],
+        "resolution": "Add additional filter conditions to narrow the candidate set before aggregation. Split into multiple queries per sub-group."
+      },
+      {
+        "error": "Query timeout",
+        "causes": [
+          "No indexed field in first clause",
+          "Full-history query without time scoping",
+          "regex 'matches' on high-volume event set without pre-filter",
+          "Cross-app query without app filter at peak platform load"
+        ],
+        "resolution": "Restructure query to start with indexed fields (app, action, outcome). Add explicit time window. Pre-filter before regex."
+      }
+    ],
+    "detection_logic_errors": [
+      {
+        "error": "Rule fires on service account activity",
+        "resolution": "Add: AND user.is_service_account = false to all user-behavior detection rules."
+      },
+      {
+        "error": "Rule fires on every event (no filtering effect)",
+        "causes": [
+          "OR clause without parentheses evaluated incorrectly",
+          "NOT applied to wrong scope"
+        ],
+        "resolution": "Add explicit parentheses around all OR sub-expressions. Test with known-false events."
+      },
+      {
+        "error": "Threshold rule never fires",
+        "causes": [
+          "having clause threshold too high",
+          "time window too short for observed event frequency",
+          "group_by field has too-high cardinality causing no single group to exceed threshold"
+        ],
+        "resolution": "Run aggregate query without 'having' in Investigation Workspace to see actual group counts. Adjust threshold to P95 of historical distribution."
+      },
+      {
+        "error": "Risk.signals field filter not matching",
+        "causes": [
+          "Array field filtered with = instead of 'contains'"
+        ],
+        "resolution": "Use: risk.signals contains \"new_country\" \u2014 not risk.signals = \"new_country\". Array fields require contains operator."
+      }
+    ]
+  },
+  "reference_quick_cards": {
+    "oql_cheatsheet": {
+      "filter_by_app": "app = \"salesforce\"",
+      "filter_by_action": "action = \"download\"",
+      "filter_by_action_set": "action in [\"download\", \"export\", \"share_externally\"]",
+      "filter_failures": "outcome = \"failure\"",
+      "filter_by_user": "user.email = \"jsmith@corp.com\"",
+      "filter_high_risk_users": "user.risk_level in [\"critical\", \"high\"]",
+      "filter_privileged": "user.is_privileged = true",
+      "filter_service_accounts": "user.is_service_account = true",
+      "filter_external_users": "user.is_external = true",
+      "filter_terminated": "user.account_status = \"terminated\"",
+      "filter_country": "geo.country = \"Russia\"",
+      "filter_high_risk_country": "geo.is_high_risk = true",
+      "filter_tor": "ip_is_tor = true",
+      "filter_proxy": "ip_is_proxy = true",
+      "filter_sensitive_resource": "resource.is_sensitive = true",
+      "filter_external_share": "resource.shared_externally = true",
+      "filter_new_country": "risk.new_country = true",
+      "filter_off_hours": "risk.off_hours = true",
+      "filter_impossible_travel": "risk.impossible_travel = true",
+      "filter_volume_anomaly": "risk.volume_anomaly = true",
+      "field_exists": "device.id is not null",
+      "field_absent": "device.id is null",
+      "time_window_1h": "| time(1h)",
+      "time_window_24h": "| time(24h)",
+      "time_window_7d": "| time(7d)",
+      "aggregate_count": "| aggregate(count() by user.email) having count > 10",
+      "aggregate_sum_bytes": "| aggregate(sum(resource.size_bytes) by user.email) having sum > 1073741824",
+      "aggregate_distinct_countries": "| aggregate(count_distinct(geo.country) by user.email) having count_distinct > 3",
+      "sort_newest": "| sort(event.timestamp desc)",
+      "limit_results": "| limit(500)",
+      "compound_example": "app = \"github\" AND action = \"setting_change\" AND github.visibility = \"public\" AND user.is_service_account = false"
+    },
+    "outcome_reference": {
+      "success": "Action completed successfully.",
+      "failure": "Action failed.",
+      "partial": "Action partially completed.",
+      "blocked": "Action was blocked by a security control.",
+      "denied": "Action was denied due to policy or permissions.",
+      "unknown": "Outcome could not be determined."
+    },
+    "risk_signals_reference": {
+      "new_country": "Event originates from a country not seen for this user in baseline.",
+      "new_device": "Device fingerprint not previously observed for this user.",
+      "impossible_travel": "Two events from geographically distant locations within an impossible timeframe.",
+      "high_volume": "Action count significantly above user's historical baseline.",
+      "off_hours": "Event occurs outside normal user active hours.",
+      "sanctioned_country": "Event originates from a country on the sanctions list.",
+      "tor_exit": "Source IP is a known Tor exit node.",
+      "new_app": "User accessing an application for the first time.",
+      "peer_group_anomaly": "Behavior significantly deviates from the user's peer group baseline."
+    },
+    "severity_decision_matrix": {
+      "Critical": "Active threat with high confidence: ATO, terminated user active, Tor authentication, confirmed data exfiltration.",
+      "High": "Strong threat indicator requiring prompt investigation: bulk export, new country + sensitive action, OAuth high-risk grant, privilege escalation.",
+      "Medium": "Suspicious but ambiguous behavior: off-hours admin action, cross-app anomaly, unverified OAuth app.",
+      "Low": "Weak signal or low-impact event: policy change by authorized admin, single-event threshold proximity.",
+      "Informational": "Baseline visibility, audit trail, or SSPM finding with no active threat indicator."
+    },
+    "indexed_vs_non_indexed": {
+      "start_queries_with": [
+        "app",
+        "action",
+        "outcome",
+        "user.email",
+        "user.risk_level",
+        "severity",
+        "ip_address",
+        "event.timestamp"
+      ],
+      "avoid_as_first_clause": [
+        "resource.name",
+        "device.os",
+        "user.department",
+        "raw.message",
+        "action_raw"
+      ]
+    }
+  }
+}
