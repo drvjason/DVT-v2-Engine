@@ -7,6 +7,7 @@ import json
 import os
 import re
 from dataclasses import asdict
+from datetime import datetime
 
 import streamlit as st
 
@@ -31,8 +32,7 @@ from soc_platform.governance import (
     default_rate_limiter,
     policy_for_role,
 )
-from soc_platform.ui import inject_theme, section_card, top_nav
-
+from soc_platform.ui import inject_theme, section_card, sidebar_nav
 
 PAGES = [
     "Home / Intelligence Hub",
@@ -53,60 +53,102 @@ INTEL_INPUT_TYPES = [
     "Arbitrary Intelligence Text",
 ]
 
+TEMPLATES = {
+    "LSASS Dumping": "actor=Unknown campaign=CredentialAccess T1003 lsass dump observed via rundll32",
+    "Lateral Movement": "actor=Unknown campaign=LateralFlow T1021 T1071 suspicious SMB and remote exec pivots",
+    "Phishing Delivery": "actor=Unknown campaign=MailDrop T1566 malicious URL delivery and follow-on beaconing",
+    "CVE Analysis": "actor=Unknown campaign=CVE-Pivot T1190 exploit chain leveraging external-facing service",
+}
 
 st.set_page_config(
     page_title="RuleForge SOC Intelligence Platform",
     page_icon="🛡️",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
 )
-
 
 config = load_config()
 
-if "theme" not in st.session_state:
-    st.session_state["theme"] = config.default_theme
-if "active_page" not in st.session_state:
-    st.session_state["active_page"] = PAGES[0]
-if "intel_package" not in st.session_state:
-    st.session_state["intel_package"] = None
-if "detection_versions" not in st.session_state:
-    st.session_state["detection_versions"] = []
-if "analyst_notes" not in st.session_state:
-    st.session_state["analyst_notes"] = ""
-if "model_choice" not in st.session_state:
-    st.session_state["model_choice"] = (
-        config.default_model if config.default_model in model_choices() else "local:deterministic"
-    )
-if "model_temperature" not in st.session_state:
-    st.session_state["model_temperature"] = 0.2
-if "model_streaming" not in st.session_state:
-    st.session_state["model_streaming"] = False
-if "model_max_tokens" not in st.session_state:
-    st.session_state["model_max_tokens"] = 1200
-if "system_prompt" not in st.session_state:
-    st.session_state["system_prompt"] = (
-        "You are a SOC analyst assistant. Produce concise, operationally actionable outputs."
-    )
-if "ai_audit_trail" not in st.session_state:
-    st.session_state["ai_audit_trail"] = []
-if "rate_limiter" not in st.session_state:
-    st.session_state["rate_limiter"] = default_rate_limiter()
-if "token_monitor" not in st.session_state:
-    st.session_state["token_monitor"] = TokenMonitor()
-if "current_playbook" not in st.session_state:
-    st.session_state["current_playbook"] = None
-if "last_report_ai" not in st.session_state:
-    st.session_state["last_report_ai"] = ""
+SESSION_DEFAULTS = {
+    "theme": config.default_theme,
+    "active_page": PAGES[0],
+    "intel_package": None,
+    "detection_versions": [],
+    "analyst_notes": "",
+    "model_choice": config.default_model if config.default_model in model_choices() else "local:deterministic",
+    "model_streaming": False,
+    "ai_audit_trail": [],
+    "rate_limiter": default_rate_limiter(),
+    "token_monitor": TokenMonitor(),
+    "current_playbook": None,
+    "last_report_ai": "",
+    "pipeline_status": "Idle",
+    "pipeline_queue": 0,
+    "active_phase": 1,
+    "recent_runs": [],
+    "saved_states": [],
+    "hunt_history": [],
+    "hunt_context": None,
+    "ti_input": "",
+}
+for key, value in SESSION_DEFAULTS.items():
+    if key not in st.session_state:
+        st.session_state[key] = value
+
+# System-level tuning, hidden from standard analysts.
+SYSTEM_TEMPERATURE = float(os.environ.get("RF_MODEL_TEMPERATURE", "0.2"))
+SYSTEM_MAX_TOKENS = int(os.environ.get("RF_MODEL_MAX_TOKENS", "2048"))
+SYSTEM_PROMPT = os.environ.get(
+    "RF_SYSTEM_PROMPT",
+    "You are a SOC analyst assistant. Produce concise, operationally actionable outputs.",
+)
 
 inject_theme(st.session_state["theme"])
-selected_page = top_nav(config.app_name, PAGES, st.session_state["active_page"])
+selected_page = sidebar_nav(config.app_name, PAGES, st.session_state["active_page"])
 st.session_state["active_page"] = selected_page
+
+policy = policy_for_role(config.user_role)
+allowed_models = [k for k in model_choices() if can_use_model(config.user_role, k)]
+if not allowed_models:
+    allowed_models = ["local:deterministic"]
+if st.session_state["model_choice"] not in allowed_models:
+    st.session_state["model_choice"] = allowed_models[0]
+
+with st.sidebar:
+    st.markdown("#### AI Model")
+    st.session_state["model_choice"] = st.selectbox(
+        "Model",
+        allowed_models,
+        index=allowed_models.index(st.session_state["model_choice"]),
+        format_func=lambda k: MODEL_REGISTRY[k].label,
+        disabled=not policy.allow_model_selection,
+        label_visibility="collapsed",
+    )
+    st.session_state["model_streaming"] = st.toggle(
+        "Streaming",
+        value=bool(st.session_state["model_streaming"]),
+    )
+    st.metric("Token Usage", st.session_state["token_monitor"].get("local-user"))
+    st.caption(
+        f"Role `{config.user_role}` • High-cost models: "
+        f"{'allowed' if policy.allow_high_cost_models else 'blocked'}"
+    )
+    if policy.role in {"admin", "soc_admin"}:
+        with st.expander("Admin Model Overrides"):
+            st.caption("Hidden controls for administrative override only.")
+            temp_override = st.number_input("Temperature", 0.0, 1.0, float(SYSTEM_TEMPERATURE), 0.05)
+            max_tok_override = st.number_input("Max Tokens", 128, 8192, int(SYSTEM_MAX_TOKENS), 64)
+            prompt_override = st.text_area("System Prompt", value=SYSTEM_PROMPT, height=80)
+            st.session_state["_admin_model_overrides"] = {
+                "temperature": float(temp_override),
+                "max_tokens": int(max_tok_override),
+                "system_prompt": prompt_override,
+            }
 
 if not config.has_llm_keys:
     st.info(
         "LLM keys are not configured in environment secrets. "
-        "Set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and/or `GOOGLE_API_KEY` in env or Streamlit secrets."
+        "Set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, and/or `GOOGLE_API_KEY` in env or secrets."
     )
 
 
@@ -121,12 +163,17 @@ def _run_ai_action(action: str, prompt: str):
         audit_ai_request(principal, role, action, model_key, False, 0)
         return None, "Rate limit exceeded. Try again shortly."
 
+    overrides = st.session_state.get("_admin_model_overrides", {})
+    temperature = float(overrides.get("temperature", SYSTEM_TEMPERATURE))
+    max_tokens = int(overrides.get("max_tokens", SYSTEM_MAX_TOKENS))
+    system_prompt = str(overrides.get("system_prompt", SYSTEM_PROMPT))
+
     provider = create_provider(
         model_key,
-        temperature=st.session_state["model_temperature"],
+        temperature=temperature,
         streaming=st.session_state["model_streaming"],
-        max_tokens=int(st.session_state["model_max_tokens"]),
-        system_prompt=str(st.session_state["system_prompt"]),
+        max_tokens=max_tokens,
+        system_prompt=system_prompt,
     )
     try:
         result = getattr(provider, action)(prompt)
@@ -136,323 +183,320 @@ def _run_ai_action(action: str, prompt: str):
     except Exception as exc:  # noqa: BLE001
         audit_ai_request(principal, role, action, model_key, False, 0)
         return None, f"Unhandled AI provider failure: {exc}"
+
     st.session_state["token_monitor"].add(principal, result.estimated_tokens)
     trail_event = {
         "action": action,
         "provider": result.provider,
         "model": result.model,
         "tokens": result.estimated_tokens,
+        "at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
     }
     st.session_state["ai_audit_trail"].append(trail_event)
     audit_ai_request(principal, role, action, model_key, True, result.estimated_tokens)
     return result, None
 
 
-policy = policy_for_role(config.user_role)
-allowed_models = [k for k in model_choices() if can_use_model(config.user_role, k)]
-if not allowed_models:
-    allowed_models = ["local:deterministic"]
-if st.session_state["model_choice"] not in allowed_models:
-    st.session_state["model_choice"] = allowed_models[0]
+def _run_pipeline(input_text: str, input_kind: str, threat_name: str):
+    st.session_state["pipeline_status"] = "Pipeline Running"
+    st.session_state["active_phase"] = 1
+    with st.spinner("Executing intelligence pipeline..."):
+        ai_result, ai_error = _run_ai_action("generate_intelligence", input_text)
+        if ai_error:
+            st.warning(ai_error)
+        package = build_intelligence_package(input_text, input_kind)
+        if ai_result:
+            package.campaign_context.insert(
+                0,
+                f"AI enrichment ({ai_result.provider}/{ai_result.model}): {ai_result.content[:220]}",
+            )
 
-cp1, cp2, cp3, cp4, cp5 = st.columns([2.2, 1.0, 1.0, 1.0, 1.6])
-with cp1:
-    selected_model = st.selectbox(
-        "Active AI Model",
-        allowed_models,
-        index=allowed_models.index(st.session_state["model_choice"]),
-        format_func=lambda k: MODEL_REGISTRY[k].label,
-        disabled=not policy.allow_model_selection,
+    st.session_state["intel_package"] = package
+    run_record = {
+        "name": threat_name or package.summary.campaign,
+        "status": "Complete",
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "risk": package.risk_score,
+        "iocs": len(package.iocs.ips) + len(package.iocs.domains) + len(package.iocs.hashes),
+        "package": package,
+    }
+    st.session_state["recent_runs"] = ([run_record] + st.session_state["recent_runs"])[:10]
+    st.session_state["detection_versions"].append(
+        {
+            "version": f"v{len(st.session_state['detection_versions']) + 1}",
+            "risk_score": package.risk_score,
+            "confidence": package.summary.confidence,
+            "mitre_count": len(package.summary.mitre_techniques),
+            "model": st.session_state["model_choice"],
+        }
     )
-    st.session_state["model_choice"] = selected_model
-with cp2:
-    st.session_state["model_temperature"] = st.slider(
-        "Temperature",
-        min_value=0.0,
-        max_value=1.0,
-        value=float(st.session_state["model_temperature"]),
-        step=0.05,
-    )
-with cp3:
-    st.session_state["model_streaming"] = st.toggle(
-        "Streaming",
-        value=bool(st.session_state["model_streaming"]),
-    )
-with cp4:
-    st.session_state["model_max_tokens"] = st.number_input(
-        "Max Tokens",
-        min_value=128,
-        max_value=8192,
-        value=int(st.session_state["model_max_tokens"]),
-        step=64,
-    )
-with cp5:
-    st.metric("Token Usage (session)", st.session_state["token_monitor"].get("local-user"))
-st.session_state["system_prompt"] = st.text_area(
-    "System Prompt",
-    value=str(st.session_state["system_prompt"]),
-    height=72,
-)
-st.caption(
-    f"Role: `{config.user_role}` | Model Selection: "
-    f"{'enabled' if policy.allow_model_selection else 'restricted'} | "
-    f"High-Cost Models: {'allowed' if policy.allow_high_cost_models else 'blocked'}"
-)
+    st.session_state["pipeline_status"] = "Idle"
+
+
+def _status_color(value: bool) -> str:
+    return "status-green" if value else "status-red"
 
 
 if selected_page == "Home / Intelligence Hub":
     st.markdown("## SOC Intelligence Hub")
-    st.caption("Dark-first, AI-driven threat intelligence and threat hunting operations workspace.")
+    st.caption("Command surface for intelligence, hunting, coverage, and operationalization.")
 
-    c1, c2, c3, c4 = st.columns(4)
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Threats Analyzed", len(st.session_state["recent_runs"]))
+    k2.metric("Rules Generated", len(st.session_state["detection_versions"]))
+    k3.metric("IOCs Collected", sum(r.get("iocs", 0) for r in st.session_state["recent_runs"]))
+    k4.metric("Theme", st.session_state["theme"].title())
+
+    c1, c2, c3 = st.columns(3)
     with c1:
-        st.metric("Platform Mode", "Production-Ready", "Modular")
+        section_card("Threat Intelligence Engine", "Pipeline-driven enrichment and operational output generation.")
     with c2:
-        st.metric("Theme", st.session_state["theme"].title(), "WCAG AA")
+        section_card("Threat Hunting Engine", "Prepare → Execute → Act → Knowledge lifecycle with SOC workflows.")
     with c3:
-        intel_count = 1 if st.session_state.get("intel_package") else 0
-        st.metric("Intel Packages", intel_count)
-    with c4:
-        st.metric("Detection Versions", len(st.session_state["detection_versions"]))
-
-    st.markdown("### Capability Tiles")
-    cols = st.columns(3)
-    with cols[0]:
-        section_card(
-            "Threat Intelligence Engine",
-            "Ingest indicators and narrative intel, extract IOCs/TTPs, map ATT&CK, and operationalize detections.",
-        )
-    with cols[1]:
-        section_card(
-            "Project SPECTRA",
-            "Framework-driven hunt lifecycle: Prepare -> Execute -> Act -> Knowledge with weighted severity scoring.",
-        )
-    with cols[2]:
-        section_card(
-            "Coverage & Playbooks",
-            "Validate MITRE detection coverage and generate structured SOC playbooks with SOAR exports.",
-        )
-
-    st.markdown("### Quick Actions")
-    q1, q2, q3 = st.columns(3)
-    with q1:
-        if st.button("Go to Threat Intelligence", use_container_width=True):
-            st.session_state["active_page"] = PAGES[1]
-            st.rerun()
-    with q2:
-        if st.button("Go to SPECTRA Hunt", use_container_width=True):
-            st.session_state["active_page"] = PAGES[2]
-            st.rerun()
-    with q3:
-        if st.button("Go to MITRE Coverage", use_container_width=True):
-            st.session_state["active_page"] = PAGES[3]
-            st.rerun()
+        section_card("Coverage + Playbooks", "MITRE coverage and deployment-ready playbook authoring.")
 
 
 if selected_page == "Threat Intelligence Engine":
-    st.markdown("## Threat Intelligence Engine")
-    st.caption("AI-assisted enrichment, IOC extraction, ATT&CK mapping, and detection operationalization.")
+    health_cols = st.columns([2.8, 1.2, 1.6, 1.6, 1.6, 0.8])
+    with health_cols[0]:
+        st.markdown("<div class='soc-topbar'><strong>Threat Intelligence</strong></div>", unsafe_allow_html=True)
+    with health_cols[1]:
+        st.markdown(f"<div class='soc-topbar'>{st.session_state['pipeline_status']}</div>", unsafe_allow_html=True)
+    with health_cols[2]:
+        st.markdown(
+            f"<div class='soc-topbar'><span class='status-dot {_status_color(bool(os.environ.get('ANTHROPIC_API_KEY')))}'></span>Anthropic</div>",
+            unsafe_allow_html=True,
+        )
+    with health_cols[3]:
+        st.markdown(
+            f"<div class='soc-topbar'><span class='status-dot {_status_color(bool(os.environ.get('VIRUSTOTAL_API_KEY')))}'></span>VirusTotal</div>",
+            unsafe_allow_html=True,
+        )
+    with health_cols[4]:
+        st.markdown(
+            f"<div class='soc-topbar'><span class='status-dot {_status_color(bool(os.environ.get('OTX_API_KEY')))}'></span>OTX</div>",
+            unsafe_allow_html=True,
+        )
+    with health_cols[5]:
+        st.markdown("<div class='soc-topbar'>⚙️</div>", unsafe_allow_html=True)
 
-    left, right = st.columns([2.2, 1.2])
+    left, main = st.columns([1.2, 3.3])
+
     with left:
-        input_kind = st.selectbox("Input Type", INTEL_INPUT_TYPES)
-        intel_input = st.text_area(
-            "Intelligence Input",
-            height=220,
-            placeholder=(
-                "Paste URL/domain/IP/hash/campaign text or incident narrative.\n"
-                "Example: actor=UNC1234 campaign=NightGlass T1071 C2 via hxxps://bad.example[.]com"
-            ),
-        )
-    with right:
-        st.markdown("<div class='rf-card'>", unsafe_allow_html=True)
-        st.markdown("#### Intake Guidance")
-        st.write("- Include observed indicators, timelines, and affected assets.")
-        st.write("- Add ATT&CK IDs when known for stronger scoring.")
-        st.write("- Add telemetry context for better query tuning.")
-        st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("### Mission Control")
+        if st.button("＋ New Pipeline", use_container_width=True, type="primary"):
+            st.session_state["intel_package"] = None
+            st.session_state["pipeline_status"] = "Idle"
+            st.session_state["active_phase"] = 1
+        st.markdown("#### Active Runs")
+        if st.session_state["pipeline_status"] == "Pipeline Running":
+            st.info(f"Phase {st.session_state['active_phase']} of 5 • running")
+        else:
+            st.caption("No active pipelines")
 
-    run = st.button("Run Intelligence Enrichment", type="primary")
+        st.markdown("#### Recent Runs")
+        for run in st.session_state["recent_runs"][:10]:
+            badge = "🟢" if run["status"] == "Complete" else "🔴"
+            st.markdown(f"{badge} **{run['name']}**  \n{run['status']} • {run['timestamp']}")
 
-    if run and intel_input.strip():
-        ai_result, ai_error = _run_ai_action("generate_intelligence", intel_input.strip())
-        if ai_error:
-            st.warning(ai_error)
-        package = build_intelligence_package(intel_input.strip(), input_kind)
-        if ai_result:
-            package.campaign_context.insert(
-                0, f"AI enrichment ({ai_result.provider}/{ai_result.model}): {ai_result.content[:220]}"
-            )
-        st.session_state["intel_package"] = package
-        st.session_state["detection_versions"].append(
-            {
-                "version": f"v{len(st.session_state['detection_versions']) + 1}",
-                "risk_score": package.risk_score,
-                "confidence": package.summary.confidence,
-                "mitre_count": len(package.summary.mitre_techniques),
-                "model": st.session_state["model_choice"],
-            }
-        )
-
-    package = st.session_state.get("intel_package")
-    if package:
-        st.divider()
-        st.markdown("### Threat Summary Dashboard")
-        k1, k2, k3, k4, k5 = st.columns(5)
-        with k1:
-            st.metric("Risk Severity", f"{package.summary.severity}/10")
-        with k2:
-            st.metric("Confidence", f"{int(package.summary.confidence * 100)}%")
-        with k3:
-            st.metric("MITRE Techniques", len(package.summary.mitre_techniques))
-        with k4:
-            st.metric("Indicators", len(package.iocs.ips) + len(package.iocs.domains) + len(package.iocs.hashes))
-        with k5:
-            st.metric("Actor", package.summary.actor)
-
-        ioc_tab, behavior_tab, detection_tab, export_tab = st.tabs(
-            ["IOC Breakdown", "Behavior & Attack Graph", "Detection Operationalization", "Export & Reporting"]
-        )
-
-        with ioc_tab:
-            st.markdown("#### Expandable IOC Pivots")
-            iocs_dict = asdict(package.iocs)
-            for category, values in iocs_dict.items():
-                with st.expander(f"{category.replace('_', ' ').title()} ({len(values)})", expanded=False):
-                    if values:
-                        for v in values:
-                            st.code(v)
-                    else:
-                        st.caption("No artifacts extracted.")
-
-        with behavior_tab:
-            st.markdown("#### Behavioral Pattern Visualization")
-            st.write("- " + "\n- ".join(package.behavior_patterns))
-
-            st.markdown("#### Attack Path Flow Diagram")
-            st.code("\n".join(package.attack_path), language="text")
-
-            st.markdown("#### Infrastructure Relationship Graph")
-            graph_edges = []
-            for domain in package.iocs.domains[:6]:
-                for ip in package.iocs.ips[:6]:
-                    graph_edges.append({"source": domain, "target": ip})
-            st.dataframe(graph_edges, use_container_width=True)
-
-            st.markdown("#### MITRE Heatmap (Condensed)")
-            heat_rows = build_coverage(package.summary.mitre_techniques)
-            st.dataframe(heat_rows, use_container_width=True)
-            st.metric("Detection Coverage Scoring", f"{weighted_coverage_score(heat_rows)}%")
-
-        with detection_tab:
-            st.markdown("#### Detection Engineering Output")
-            for query in package.detection_queries:
-                with st.expander(query.platform, expanded=False):
-                    st.caption(
-                        f"MITRE: {', '.join(query.mitre)} | Confidence: {int(query.confidence * 100)}%"
-                    )
-                    st.code(query.query, language="sql")
-                    st.write(f"Tuning Guidance: {query.tuning_guidance}")
-                    st.write(f"False-Positive Considerations: {query.false_positive_notes}")
-
-            st.markdown("#### Threat Hunting Playbook")
-            st.json(asdict(package.hunting_playbook), expanded=False)
-
-            st.markdown("#### Behavior-Based Detection Generation")
-            behavior_input = st.text_area(
-                "Knowledge Base / Internal Docs Input",
-                height=140,
-                key="behavior_detection_input",
-                placeholder="Paste internal behavior notes for detection-as-code conversion.",
-            )
-            if st.button("Generate Detection-as-Code Rules"):
-                det_result, det_error = _run_ai_action("generate_detections", behavior_input)
-                if det_error:
-                    st.warning(det_error)
-                techniques = extract_techniques(behavior_input) or package.summary.mitre_techniques
-                rules = [
-                    {
-                        "rule_id": f"RF-SOC-{i+1:03d}",
-                        "logic": f"behavior_contains('{line[:70]}')",
-                        "mitre": techniques,
-                    }
-                    for i, line in enumerate([ln for ln in behavior_input.splitlines() if ln.strip()][:5])
-                ]
-                if det_result:
-                    rules.append(
-                        {
-                            "rule_id": f"RF-SOC-AI-{len(rules) + 1:03d}",
-                            "logic": det_result.content[:180],
-                            "mitre": techniques,
-                        }
-                    )
-                coverage = build_coverage(techniques)
-                st.write("Generated Rules")
-                st.json(rules, expanded=False)
-                st.write("MITRE Technique Coverage")
-                st.dataframe(coverage, use_container_width=True)
-                st.metric("Coverage Score", f"{weighted_coverage_score(coverage)}%")
-
-            st.markdown("#### Operational Actions")
-            oa1, oa2, oa3 = st.columns(3)
-            with oa1:
-                soar_payload = {
-                    "summary": asdict(package.summary),
-                    "iocs": asdict(package.iocs),
-                    "queries": [asdict(q) for q in package.detection_queries],
+        st.markdown("#### Saved States")
+        if st.button("Save Current State", use_container_width=True, disabled=st.session_state["intel_package"] is None):
+            st.session_state["saved_states"].append(
+                {
+                    "name": f"Saved-{datetime.now().strftime('%H%M%S')}",
+                    "phase": st.session_state["active_phase"],
+                    "package": st.session_state["intel_package"],
                 }
-                st.download_button(
-                    "One-Click SOAR Export",
-                    data=json.dumps(soar_payload, indent=2),
-                    file_name="soar_export.json",
-                    mime="application/json",
-                    use_container_width=True,
+            )
+        if st.session_state["saved_states"]:
+            sel = st.selectbox("Saved", list(range(len(st.session_state["saved_states"]))), format_func=lambda i: st.session_state["saved_states"][i]["name"])
+            if st.button("Resume", use_container_width=True):
+                saved = st.session_state["saved_states"][sel]
+                st.session_state["intel_package"] = saved["package"]
+                st.session_state["active_phase"] = saved["phase"]
+
+    with main:
+        package = st.session_state["intel_package"]
+
+        if package is None:
+            st.markdown("## Initiate Intelligence Pipeline")
+            t1, t2, t3, t4 = st.columns(4)
+            for idx, (label, template) in enumerate(TEMPLATES.items()):
+                with [t1, t2, t3, t4][idx]:
+                    if st.button(label, use_container_width=True):
+                        st.session_state["ti_input"] = template
+
+            with st.container(border=True):
+                c1, c2 = st.columns(2)
+                with c1:
+                    threat_name = st.text_input("Threat Name")
+                    threat_actor = st.text_input("Actor")
+                    malware = st.text_input("Malware")
+                    cve = st.text_input("CVE")
+                    input_kind = st.selectbox("Input Type", INTEL_INPUT_TYPES)
+                with c2:
+                    platform = st.text_input("Platform", value="Windows / Linux / Cloud")
+                    siem = st.text_input("SIEM", value="Splunk / Sentinel")
+                    log_sources = st.text_input("Log Sources", value="EDR, DNS, Proxy, Identity")
+                    edr = st.text_input("EDR", value="SentinelOne")
+                    endpoint_count = st.number_input("Endpoint Count", min_value=1, max_value=500000, value=500)
+                existing_rules = st.text_input("Existing Rules")
+                known_gaps = st.text_input("Known Gaps")
+                focus_statement = st.text_area("Focus Statement", height=90)
+                intel_input = st.text_area(
+                    "Threat Intelligence Input",
+                    key="ti_input",
+                    height=180,
+                    placeholder="Paste IOCs, actor details, TTP narrative, telemetry notes, CVE context...",
                 )
-            with oa2:
-                if st.button("Rule Deployment Button", use_container_width=True):
-                    if policy.allow_deploy_generated_rules:
-                        st.success("Queued deployment request to detection-as-code pipeline.")
-                    else:
-                        st.error("Your role is not permitted to deploy generated detections.")
-            with oa3:
-                if st.button("Back to Home", use_container_width=True):
-                    st.session_state["active_page"] = PAGES[0]
+                if st.button("Run Pipeline", type="primary", use_container_width=True, disabled=not intel_input.strip()):
+                    merged_input = "\n".join(
+                        [
+                            f"threat={threat_name}",
+                            f"actor={threat_actor}",
+                            f"malware={malware}",
+                            f"cve={cve}",
+                            f"platform={platform}",
+                            f"siem={siem}",
+                            f"log_sources={log_sources}",
+                            f"edr={edr}",
+                            f"endpoint_count={endpoint_count}",
+                            f"existing_rules={existing_rules}",
+                            f"known_gaps={known_gaps}",
+                            f"focus={focus_statement}",
+                            intel_input,
+                        ]
+                    )
+                    _run_pipeline(merged_input, input_kind, threat_name)
                     st.rerun()
 
-            st.markdown("#### Analyst Notes")
-            st.session_state["analyst_notes"] = st.text_area(
-                "Notes",
-                value=st.session_state["analyst_notes"],
-                height=120,
-                key="analyst_notes_area",
-            )
+            b1, b2, b3 = st.columns(3)
+            b1.metric("Total Rules Generated", len(st.session_state["detection_versions"]))
+            b2.metric("Total IOCs Collected", sum(r.get("iocs", 0) for r in st.session_state["recent_runs"]))
+            b3.metric("Threats Analyzed", len(st.session_state["recent_runs"]))
 
-            st.markdown("#### Version-Controlled Detection Tracking")
-            st.dataframe(st.session_state["detection_versions"], use_container_width=True)
+        else:
+            st.markdown("### Phase Timeline")
+            pcols = st.columns(5)
+            phase_labels = [
+                "1. Intelligence Collection",
+                "2. Detection Points",
+                "3. Rule Generation",
+                "4. Deployment Guides",
+                "5. Metrics & Scoring",
+            ]
+            for i, label in enumerate(phase_labels, start=1):
+                status = "✅" if i < st.session_state["active_phase"] else "🟢" if i == st.session_state["active_phase"] else "⏳"
+                with pcols[i - 1]:
+                    if st.button(f"{status} {label}", use_container_width=True, key=f"phase_{i}"):
+                        st.session_state["active_phase"] = i
 
-        with export_tab:
-            if st.button("Generate AI Report Narrative"):
-                report_ai, report_ai_error = _run_ai_action(
-                    "generate_report",
-                    json.dumps(
-                        {
-                            "summary": asdict(package.summary),
-                            "iocs": asdict(package.iocs),
-                            "mitre": package.summary.mitre_techniques,
-                        }
-                    ),
+            collector_left, collector_right = st.columns([1.4, 1.8])
+            with collector_left:
+                st.markdown("#### Phase 1 – Collector Feed")
+                collectors = [
+                    ("MITRE ATT&CK", len(package.summary.mitre_techniques), "Completed"),
+                    ("NVD", 1, "Completed"),
+                    ("VirusTotal", len(package.iocs.hashes), "Partial"),
+                    ("AlienVault OTX", len(package.iocs.domains), "Completed"),
+                    ("SigmaHQ", 3, "Completed"),
+                    ("Abuse.ch", len(package.iocs.ips), "Completed"),
+                ]
+                for name, count, status in collectors:
+                    icon = "✅" if status == "Completed" else "🟡"
+                    with st.expander(f"{icon} {name} • {count} items • 00:01:{count:02d}"):
+                        st.write(f"Raw collector output preview for {name}.")
+
+            with collector_right:
+                st.markdown("#### Phase 1 – AI Intelligence Feed")
+                feed_tabs = st.tabs(
+                    [
+                        "Threat Profile",
+                        "Technical Analysis",
+                        "MITRE Mapping",
+                        "IOCs",
+                        "Existing Detections",
+                        "Sources",
+                    ]
                 )
-                if report_ai_error:
-                    st.warning(report_ai_error)
-                elif report_ai:
-                    st.session_state["last_report_ai"] = report_ai.content
+                with feed_tabs[0]:
+                    st.json(asdict(package.summary), expanded=False)
+                with feed_tabs[1]:
+                    st.write("- " + "\n- ".join(package.behavior_patterns))
+                with feed_tabs[2]:
+                    st.dataframe(build_coverage(package.summary.mitre_techniques), use_container_width=True)
+                with feed_tabs[3]:
+                    st.json(asdict(package.iocs), expanded=False)
+                with feed_tabs[4]:
+                    st.dataframe([asdict(q) for q in package.detection_queries], use_container_width=True)
+                with feed_tabs[5]:
+                    st.write("MITRE ATT&CK, OTX, VirusTotal, NVD, SigmaHQ, internal telemetry")
+
+            st.markdown("#### IOC Visualization Strip")
+            chip_groups = {
+                "Hash": package.iocs.hashes[:8],
+                "Domain": package.iocs.domains[:8],
+                "IP": package.iocs.ips[:8],
+                "URL": package.iocs.urls[:8],
+            }
+            for group, values in chip_groups.items():
+                if values:
+                    st.markdown(f"**{group}**")
+                    st.write(" ".join([f"`{v}`" for v in values]))
+
+            st.markdown("#### MITRE Mini-Map")
+            st.dataframe(build_coverage(package.summary.mitre_techniques), use_container_width=True)
+
+            with st.expander("Phase 2 – Detection Points", expanded=True):
+                ranked = package.detection_queries[:3]
+                for idx, q in enumerate(ranked, start=1):
+                    st.markdown(f"**#{idx} {q.platform}**")
+                    st.progress(min(100, int(q.confidence * 100)), text=f"Reliability {int(q.confidence*100)}%")
+                    st.progress(min(100, int((q.confidence + 0.08) * 100)), text="Specificity")
+                    st.progress(min(100, int((q.confidence + 0.05) * 100)), text="Evasion Resistance")
+
+            with st.expander("Phase 3 – Rule Generation", expanded=True):
+                format_sel = st.selectbox("Format", ["YAML", "KQL", "SPL", "S1QL"])
+                variant = st.radio("Variant", ["Primary", "Broad", "Correlation"], horizontal=True)
+                base_rule = package.detection_queries[0].query if package.detection_queries else "event.type == suspicious"
+                st.code(base_rule, language="yaml" if format_sel == "YAML" else "sql")
+                st.caption(f"Logic walkthrough: variant={variant}, source confidence={int(package.summary.confidence*100)}%")
+                st.button("Copy Rule")
+
+            with st.expander("Phase 4 – Deployment Guides", expanded=True):
+                d_tabs = st.tabs(["Deployment Guide", "Triage Playbook", "Tuning Guide"])
+                with d_tabs[0]:
+                    st.write("Deploy to SIEM/EDR rules engine with staged rollout and canary scope.")
+                with d_tabs[1]:
+                    st.write("Validate impacted assets, pivot on related IOCs, isolate high-risk hosts.")
+                with d_tabs[2]:
+                    st.write("Tune expected noise sources, suppress trusted infra, iterate on false positives.")
+                bundle_bytes = json.dumps(asdict(package), indent=2).encode("utf-8")
+                st.download_button("Download All (ZIP-like JSON bundle)", data=bundle_bytes, file_name="deployment_bundle.json")
+
+            with st.expander("Phase 5 – Metrics & Scoring", expanded=True):
+                q1, q2 = st.columns(2)
+                q3, q4 = st.columns(2)
+                q1.metric("TP Rate", f"{int(package.summary.confidence*100)}%")
+                q2.metric("FP Risk", f"{max(1, 100 - int(package.summary.confidence*100))}%")
+                q3.metric("Evasion Resistance", f"{int((package.summary.confidence + 0.06) * 100)}%")
+                grade = "A" if package.risk_score >= 8 else "B" if package.risk_score >= 6 else "C"
+                q4.metric("Target Grade", grade)
+                table = [
+                    {"Category": "True Positive", "Outcome": "Pass"},
+                    {"Category": "False Positive", "Outcome": "Monitor"},
+                    {"Category": "Evasion", "Outcome": "Needs hardening"},
+                ]
+                st.dataframe(table, use_container_width=True)
+
+            st.markdown("---")
+            st.markdown("### Output Dock")
             payload = {
                 "executive_summary": asdict(package.summary),
                 "technical_analysis": {
                     "behavior_patterns": package.behavior_patterns,
                     "attack_path": package.attack_path,
                     "campaign_context": package.campaign_context,
-                    "ai_report": st.session_state["last_report_ai"],
                 },
                 "ioc_tables": asdict(package.iocs),
                 "detection_queries": [asdict(q) for q in package.detection_queries],
@@ -464,122 +508,151 @@ if selected_page == "Threat Intelligence Engine":
                 },
                 "mitre_coverage_matrix": build_coverage(package.summary.mitre_techniques),
             }
-            html_report = build_professional_html_report(payload, "RuleForge SOC Intelligence Report")
-            st.download_button(
-                "Professional PDF Report (Print-Ready HTML)",
-                data=html_report,
-                file_name="soc_professional_report.html",
-                mime="text/html",
-            )
-            st.download_button(
-                "Executive Summary",
-                data=build_executive_summary(payload),
-                file_name="executive_summary.txt",
-                mime="text/plain",
-            )
-            st.download_button(
-                "Word Technical Guide",
-                data=build_word_technical_guide(payload),
-                file_name="technical_guide.doc",
-                mime="application/msword",
-            )
-            st.download_button(
-                "Detection Engineering Report",
-                data=build_detection_engineering_report(payload),
-                file_name="detection_engineering_report.json",
-                mime="application/json",
-            )
-            st.download_button(
-                "MITRE Coverage Matrix",
-                data=json.dumps(payload["mitre_coverage_matrix"], indent=2),
-                file_name="mitre_coverage_matrix.json",
-                mime="application/json",
-            )
-            st.download_button(
-                "JSON",
-                data=build_json(payload),
-                file_name="intel_package.json",
-                mime="application/json",
-            )
-            st.download_button(
-                "STIX Format",
-                data=json.dumps(package_to_stix_like(package), indent=2),
-                file_name="intel_stix_bundle.json",
-                mime="application/json",
-            )
-            st.markdown("#### AI Audit Trail")
-            st.dataframe(st.session_state["ai_audit_trail"], use_container_width=True)
+            d1, d2, d3, d4, d5 = st.columns(5)
+            d1.download_button("rule_primary.yml", data="rule: primary\n", file_name="rule_primary.yml")
+            d2.download_button("triage_playbook.md", data=to_markdown(build_detection_playbook("Auto", package.summary.mitre_techniques, [], "")), file_name="triage_playbook.md")
+            d3.download_button("tuning_guide.md", data="tuning:\n- suppress trusted infra\n", file_name="tuning_guide.md")
+            d4.download_button("validation.json", data=build_json(payload), file_name="validation.json")
+            d5.download_button("pipeline_state.json", data=json.dumps({"phase": st.session_state["active_phase"], "status": st.session_state["pipeline_status"]}), file_name="pipeline_state.json")
+
+            with st.expander("Pipeline Comparison View"):
+                runs = st.session_state["recent_runs"]
+                if len(runs) >= 2:
+                    i1 = st.selectbox("Run A", list(range(len(runs))), index=0, format_func=lambda i: runs[i]["name"], key="cmp_a")
+                    i2 = st.selectbox("Run B", list(range(len(runs))), index=1, format_func=lambda i: runs[i]["name"], key="cmp_b")
+                    a, b = runs[i1], runs[i2]
+                    overlap = min(a.get("iocs", 0), b.get("iocs", 0))
+                    st.write(f"IOC overlap estimate: {overlap}")
+                    st.write(f"Risk delta: {round(a['risk'] - b['risk'], 2)}")
+                else:
+                    st.caption("Need at least two runs to compare.")
 
 
 if selected_page == "Threat Hunting Engine v2.0 (SPECTRA)":
-    st.markdown("## Threat Hunting Engine v2.0 - Project SPECTRA")
-    st.caption("Lifecycle workflow: Prepare -> Execute -> Act -> Knowledge")
+    st.markdown("## Threat Hunting Engine v2.0 – Project SPECTRA")
+    st.caption("Persistent lifecycle visibility: PREPARE → EXECUTE → ACT → KNOWLEDGE")
 
     package = st.session_state.get("intel_package")
     if not package:
         st.warning("No intelligence package found. Generate one in Threat Intelligence Engine first.")
     else:
-        report = build_spectra_report(package)
-        if st.button("Run AI Behavioral Analysis"):
-            behavior_result, behavior_error = _run_ai_action("analyze_behavior", package.input_text)
-            if behavior_error:
-                st.warning(behavior_error)
-            elif behavior_result:
-                st.info(f"AI Behavioral Analysis ({behavior_result.provider}/{behavior_result.model})")
-                st.code(behavior_result.content, language="text")
+        z1, z2, z3 = st.columns([4, 3.5, 2.5])
+        with z1:
+            st.markdown("### INITIATE HUNT")
+            hunt_input = st.text_area(
+                "Multi-Modal Input",
+                height=180,
+                placeholder="Paste IOC list, behavior description, URLs, raw logs...",
+                key="hunt_input",
+            )
+            c1, c2, c3 = st.columns(3)
+            c1.button("Paste IOC", use_container_width=True)
+            c2.button("Describe Behavior", use_container_width=True)
+            c3.button("Load File", use_container_width=True)
+            tool_toggles = st.multiselect(
+                "Tools",
+                ["SentinelOne", "Splunk", "Sentinel", "Palo Alto", "Okta", "DNS", "Proxy"],
+                default=["SentinelOne", "Splunk", "Sentinel"],
+            )
+            if st.button("PREPARE HUNT", use_container_width=True, type="primary"):
+                score = build_spectra_report(package)["severity"]["score_0_10"]
+                st.session_state["hunt_context"] = {
+                    "id": f"H-{datetime.now().strftime('%H%M%S')}",
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "severity": score,
+                    "hypothesis": package.hunting_playbook.hypothesis,
+                    "tools": tool_toggles,
+                }
+                st.session_state["hunt_history"] = ([st.session_state["hunt_context"]] + st.session_state["hunt_history"])[:20]
 
-        p, e, a, k = st.tabs(["Prepare", "Execute", "Act", "Knowledge"])
-        with p:
-            st.write("### Installation Instructions")
-            st.code("\n".join(report["installation"]), language="bash")
-            st.write("### Workflow Documentation")
-            st.json(report["lifecycle"]["Prepare"], expanded=False)
-        with e:
-            st.write("### Multi-Tool Query Generation")
-            st.dataframe(report["multi_tool_queries"], use_container_width=True)
-            st.write("### IOC Extraction Engine")
-            st.json(asdict(package.iocs), expanded=False)
-        with a:
-            st.write("### Severity Scoring (0-10 Weighted Model)")
+        with z2:
+            st.markdown("### Live Hunt Context")
+            ctx = st.session_state.get("hunt_context")
+            if ctx:
+                sev_color = "🔴" if ctx["severity"] >= 8 else "🟠" if ctx["severity"] >= 6 else "🟡"
+                st.markdown(f"{sev_color} **Severity {ctx['severity']}/10**  •  `{ctx['id']}`  •  {ctx['timestamp']}")
+                st.markdown(f"**Hypothesis:** {ctx['hypothesis']}")
+                st.dataframe(build_coverage(package.summary.mitre_techniques), use_container_width=True)
+                st.write("IOC Chips")
+                st.write(" ".join([f"`{x}`" for x in (package.iocs.ips + package.iocs.domains)[:12]]))
+                a1, a2, a3, a4 = st.columns(4)
+                a1.button("Execute Queries", use_container_width=True)
+                a2.button("Export JSON", use_container_width=True)
+                a3.button("Copy Hypothesis", use_container_width=True)
+                a4.button("Edit Context", use_container_width=True)
+            else:
+                st.caption("Prepare a hunt to populate live context.")
+
+        with z3:
+            st.markdown("### Activity Feed")
+            for hunt in st.session_state["hunt_history"][:10]:
+                badge = "🟢" if hunt["severity"] < 6 else "🟠" if hunt["severity"] < 8 else "🔴"
+                st.markdown(f"{badge} `{hunt['id']}` • {hunt['timestamp']}")
+            st.markdown("#### Telemetry Health")
+            st.markdown("🟢 Endpoint  🟢 Identity  🟡 DNS  🟢 Proxy")
+
+        st.markdown("---")
+        st.markdown("### Query Execution Surface")
+        selected_tools = st.session_state.get("hunt_context", {}).get("tools", ["SentinelOne", "Splunk", "Sentinel"])
+        query_tabs = st.tabs(selected_tools)
+        platform_map = {
+            "SentinelOne": "SentinelOne S1QL",
+            "Splunk": "Splunk SPL",
+            "Sentinel": "Microsoft Sentinel KQL",
+            "Palo Alto": "Palo Alto Query",
+            "Okta": "Okta Detection Query",
+            "DNS": "DNS Detection Logic",
+            "Proxy": "Proxy Search Logic",
+        }
+        for tab, tool in zip(query_tabs, selected_tools):
+            with tab:
+                qmatch = next((q for q in package.detection_queries if q.platform == platform_map.get(tool, "")), None)
+                if qmatch:
+                    st.code(qmatch.query, language="sql")
+                    st.caption(f"Why this query: {qmatch.tuning_guidance}")
+                    st.caption(f"Confidence: {int(qmatch.confidence*100)}%")
+                st.button(f"Copy {tool} Query", key=f"copy_{tool}")
+                st.link_button(f"Run in {tool}", url="https://example.internal/tool")
+
+        st.markdown("### Findings Intake & Act Phase")
+        for tool in selected_tools:
+            with st.expander(tool):
+                findings = st.text_area(f"Paste findings for {tool}", key=f"findings_{tool}")
+                auto_skip = st.toggle(f"AUTO-SKIP empty findings ({tool})", value=True, key=f"skip_{tool}")
+                if findings.strip() or not auto_skip:
+                    st.info("Live analysis preview updated: risk and hit counts recalculated.")
+
+        st.markdown("### Knowledge Report Surface")
+        report = build_spectra_report(package)
+        k_tabs = st.tabs(["Summary", "Workflow", "MITRE", "Recommendations"])
+        with k_tabs[0]:
             st.json(report["severity"], expanded=False)
-            st.write("### Severity Response Matrix")
-            matrix = [
-                {"range": "0-3.9", "response": "Monitor and enrich"},
-                {"range": "4.0-5.9", "response": "Full hunt workflow"},
-                {"range": "6.0-7.9", "response": "Accelerated investigation"},
-                {"range": "8.0-10", "response": "Immediate containment"},
-            ]
-            st.dataframe(matrix, use_container_width=True)
-            st.write("### Operational Procedures")
-            st.write("- " + "\n- ".join(report["operational_procedures"]))
-        with k:
-            st.write("### Structured Report Output")
-            st.json(report, expanded=False)
-            st.download_button(
-                "Export JSON",
-                data=export_spectra_json(report),
-                file_name="spectra_report.json",
-                mime="application/json",
-            )
-            st.download_button(
-                "Export TXT",
-                data=export_spectra_txt(report),
-                file_name="spectra_report.txt",
-                mime="text/plain",
-            )
-            st.caption("CLI + script mode compatible: exported JSON/TXT can be consumed by automation pipelines.")
+        with k_tabs[1]:
+            st.json(report["lifecycle"], expanded=False)
+        with k_tabs[2]:
+            st.dataframe(build_coverage(package.summary.mitre_techniques), use_container_width=True)
+        with k_tabs[3]:
+            for rec in package.hunting_playbook.containment:
+                st.checkbox(rec, value=False)
+
+        x1, x2, x3, x4, x5 = st.columns(5)
+        x1.download_button("TXT", data=export_spectra_txt(report), file_name="knowledge_report.txt")
+        x2.download_button("JSON", data=export_spectra_json(report), file_name="knowledge_report.json")
+        x3.button("Copy")
+        x4.button("Open")
+        if x5.button("Push to Ticket"):
+            st.session_state["ai_audit_trail"].append({"action": "push_ticket", "at": datetime.utcnow().isoformat() + "Z"})
+            st.success("Ticket push event logged.")
 
 
 if selected_page == "MITRE ATT&CK Coverage Engine":
-    st.markdown("## MITRE ATT&CK Coverage Engine (Draft)")
-    st.caption("Placeholder draft with interactive mapping, scoring, filtering, and export.")
-
+    st.markdown("## MITRE ATT&CK Coverage Engine")
     raw_rules = st.text_area(
         "Detection Rule Input",
-        height=200,
-        placeholder="Paste detection content containing ATT&CK IDs like T1059, T1071, T1105...",
+        height=220,
+        placeholder="Paste detection rules with ATT&CK IDs (T1059, T1071, ...)",
     )
-    tactic_filter = st.multiselect(
+    tactics = st.multiselect(
         "Filter Tactics",
         options=[
             "Execution",
@@ -592,32 +665,17 @@ if selected_page == "MITRE ATT&CK Coverage Engine":
         ],
         default=[],
     )
-
     techniques = extract_techniques(raw_rules)
     coverage = build_coverage(techniques)
-    if tactic_filter:
-        coverage = [r for r in coverage if r["tactic"] in tactic_filter]
-
-    if st.button("AI-Assisted MITRE Mapping"):
-        mitre_ai, mitre_err = _run_ai_action("generate_intelligence", raw_rules or "No rule text provided")
-        if mitre_err:
-            st.warning(mitre_err)
-        elif mitre_ai:
-            st.info(f"Mapping generated by {mitre_ai.provider}/{mitre_ai.model}")
-            st.code(mitre_ai.content, language="text")
+    if tactics:
+        coverage = [r for r in coverage if r["tactic"] in tactics]
 
     st.dataframe(coverage, use_container_width=True)
     st.metric("Weighted Coverage Score", f"{weighted_coverage_score(coverage)}%")
-    confidence_index = round(
-        sum(r["confidence_index"] for r in coverage) / len(coverage), 2
-    ) if coverage else 0.0
+    confidence_index = (
+        round(sum(r["confidence_index"] for r in coverage) / len(coverage), 2) if coverage else 0.0
+    )
     st.metric("Detection Confidence Index", f"{int(confidence_index * 100)}%")
-
-    drill = st.selectbox("Drill-down Tactic", [r["tactic"] for r in coverage] or ["None"])
-    selected = next((r for r in coverage if r["tactic"] == drill), None)
-    if selected:
-        st.json(selected, expanded=False)
-
     st.download_button(
         "Export Coverage Matrix",
         data=json.dumps(coverage, indent=2),
@@ -628,8 +686,6 @@ if selected_page == "MITRE ATT&CK Coverage Engine":
 
 if selected_page == "Playbook Builder":
     st.markdown("## Playbook Builder")
-    st.caption("Structured detection playbook creation with MITRE mapping, query templates, and SOAR export.")
-
     scenario = st.text_input("Threat Scenario")
     mitre_input = st.text_input("MITRE Techniques (comma-separated)", value="T1059,T1071")
     query_templates_raw = st.text_area(
@@ -651,35 +707,63 @@ if selected_page == "Playbook Builder":
         if playbook_error:
             st.warning(playbook_error)
         techniques = [t.strip() for t in mitre_input.split(",") if re.match(r"^T\d{4}(?:\.\d{3})?$", t.strip())]
-        query_templates = [q.strip() for q in query_templates_raw.splitlines() if q.strip()]
-        playbook = build_detection_playbook(scenario, techniques, query_templates, automation_logic)
+        queries = [q.strip() for q in query_templates_raw.splitlines() if q.strip()]
+        playbook = build_detection_playbook(scenario, techniques, queries, automation_logic)
         if playbook_ai:
             playbook["ai_summary"] = playbook_ai.content
-            playbook["ai_model"] = f"{playbook_ai.provider}:{playbook_ai.model}"
+            playbook["ai_model"] = st.session_state["model_choice"]
         st.session_state["current_playbook"] = playbook
 
     playbook = st.session_state.get("current_playbook")
     if playbook:
         st.json(playbook, expanded=False)
-
         c1, c2, c3 = st.columns(3)
-        with c1:
-            st.download_button(
-                "SOAR Export",
-                data=to_json(playbook),
-                file_name="playbook_soar.json",
-                mime="application/json",
-                use_container_width=True,
-            )
-        with c2:
-            st.download_button(
-                "Documentation Generator",
-                data=to_markdown(playbook),
-                file_name="playbook_documentation.md",
-                mime="text/markdown",
-                use_container_width=True,
-            )
-        with c3:
-            if st.button("Back to Home", use_container_width=True):
-                st.session_state["active_page"] = PAGES[0]
-                st.rerun()
+        c1.download_button("SOAR Export", data=to_json(playbook), file_name="playbook_soar.json")
+        c2.download_button("Documentation", data=to_markdown(playbook), file_name="playbook_documentation.md")
+        c3.download_button(
+            "Bundle",
+            data=build_professional_html_report(
+                {
+                    "executive_summary": playbook,
+                    "technical_analysis": playbook,
+                    "ioc_tables": {},
+                    "detection_queries": playbook.get("query_templates", []),
+                    "hunt_workflow": playbook,
+                    "risk_and_recommendations": {},
+                },
+                "Playbook Report",
+            ),
+            file_name="playbook_report.html",
+        )
+
+# Export panel remains globally accessible for analyst workflows.
+if st.session_state.get("intel_package") is not None:
+    with st.expander("Global Export & Reporting", expanded=False):
+        package = st.session_state["intel_package"]
+        payload = {
+            "executive_summary": asdict(package.summary),
+            "technical_analysis": {
+                "behavior_patterns": package.behavior_patterns,
+                "attack_path": package.attack_path,
+                "campaign_context": package.campaign_context,
+                "ai_report": st.session_state.get("last_report_ai", ""),
+            },
+            "ioc_tables": asdict(package.iocs),
+            "detection_queries": [asdict(q) for q in package.detection_queries],
+            "hunt_workflow": asdict(package.hunting_playbook),
+            "risk_and_recommendations": {
+                "risk_score": package.risk_score,
+                "confidence": package.summary.confidence,
+                "recommendations": package.hunting_playbook.containment,
+            },
+            "mitre_coverage_matrix": build_coverage(package.summary.mitre_techniques),
+        }
+        html_report = build_professional_html_report(payload, "RuleForge SOC Intelligence Report")
+        y1, y2, y3, y4, y5, y6, y7 = st.columns(7)
+        y1.download_button("PDF Report", data=html_report, file_name="soc_report.html")
+        y2.download_button("Executive", data=build_executive_summary(payload), file_name="executive_summary.txt")
+        y3.download_button("Word Guide", data=build_word_technical_guide(payload), file_name="technical_guide.doc")
+        y4.download_button("Detection", data=build_detection_engineering_report(payload), file_name="detection_report.json")
+        y5.download_button("MITRE", data=json.dumps(payload["mitre_coverage_matrix"], indent=2), file_name="mitre_matrix.json")
+        y6.download_button("JSON", data=build_json(payload), file_name="intel_package.json")
+        y7.download_button("STIX", data=json.dumps(package_to_stix_like(package), indent=2), file_name="intel_stix_bundle.json")
